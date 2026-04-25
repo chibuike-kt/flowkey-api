@@ -1,0 +1,60 @@
+# =============================================================================
+# FLOWKEY API — GITIGNORE
+# =============================================================================
+
+# --- Environment & Secrets ---
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- Build output ---
+dist/
+build/
+
+# --- Dependencies ---
+node_modules/
+
+# --- Test artifacts ---
+coverage/
+.nyc_output/
+junit.xml
+
+# --- Prisma ---
+# Generated client is built at deploy time — not committed
+# Migrations ARE committed (they are the source of truth for schema history)
+prisma/generated/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V7
+.Trashes
+ehthumbs.db
+
+# --- TypeScript ---
+*.tsbuildinfo
+
+# --- Docker ---
+# Docker Compose override files (local dev customisation — never committed)
+docker-compose.override.yml

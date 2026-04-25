@@ -1,0 +1,75 @@
+version: '3.9'
+
+# =============================================================================
+# FLOWKEY — LOCAL DEVELOPMENT SERVICES
+# =============================================================================
+# This file provides Postgres and Redis for local development ONLY.
+# Production uses AWS RDS (Postgres) and AWS ElastiCache (Redis).
+#
+# Ports are intentionally non-default to avoid conflicts with any local
+# Postgres or Redis instances you may already be running:
+#   Postgres: host port 5433 → container port 5432
+#   Redis:    host port 6380 → container port 6379
+#
+# All containers bind to 127.0.0.1 only — not exposed to the network.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowkey_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flowkey
+      POSTGRES_PASSWORD: flowkey_dev_password
+      POSTGRES_DB: flowkey_db
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      # Bind to localhost ONLY — do not expose to network
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-shadow-db.sql:/docker-entrypoint-initdb.d/init-shadow-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowkey -d flowkey_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - flowkey_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: flowkey_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass flowkey_dev_redis_password
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      # Bind to localhost ONLY — do not expose to network
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "flowkey_dev_redis_password", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - flowkey_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  flowkey_network:
+    driver: bridge

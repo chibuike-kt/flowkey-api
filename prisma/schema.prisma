@@ -1,0 +1,27 @@
+// =============================================================================
+// FLOWKEY — PRISMA SCHEMA
+// =============================================================================
+// This is the placeholder schema for Phase 2 (environment setup).
+// The full schema with all tables, constraints, and indexes is built in Phase 3.
+//
+// Do NOT add tables here manually.
+// All schema changes go through `prisma migrate dev` — no manual SQL.
+// Every migration must have a documented rollback strategy.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// Full schema is defined in Phase 3.
+// The tables listed in the Phase 1 architecture document will be implemented there:
+//   users, user_auth, wallets, ledger_entries, transactions, transaction_fees,
+//   receipts, idempotency_keys, audit_logs, device_sessions, kyc_attempts,
+//   beneficiaries, payment_requests, notifications, notification_prefs,
+//   conversations, webhooks, disputes, reversals, admin_actions, qr_codes
