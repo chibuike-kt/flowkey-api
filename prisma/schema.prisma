@@ -1,12 +1,21 @@
 // =============================================================================
-// FLOWKEY — PRISMA SCHEMA
+// FLOWKEY — PRISMA SCHEMA v0.3.0
 // =============================================================================
-// This is the placeholder schema for Phase 2 (environment setup).
-// The full schema with all tables, constraints, and indexes is built in Phase 3.
+// Phase 3: Full database schema — all tables, enums, relations, indexes.
 //
-// Do NOT add tables here manually.
-// All schema changes go through `prisma migrate dev` — no manual SQL.
-// Every migration must have a documented rollback strategy.
+// INVARIANTS (enforced by DB triggers — see migration files):
+//   - ledger_entries: append-only. No UPDATE or DELETE. Ever.
+//   - audit_logs:     append-only. No UPDATE or DELETE. Ever.
+//
+// MONETARY VALUES: All amounts are BIGINT (kobo = NGN × 100).
+//   No NUMERIC, DECIMAL, or FLOAT anywhere in this schema.
+//
+// TIMESTAMPS: All timestamps are DateTime with @db.Timestamptz.
+//   No naive timestamps anywhere.
+//
+// PRIMARY KEYS: UUID v4 via @default(dbgenerated("gen_random_uuid()")).
+//
+// SOFT DELETES: deleted_at on all user-facing tables.
 // =============================================================================
 
 generator client {
@@ -14,14 +23,786 @@ generator client {
 }
 
 datasource db {
-  provider          = "postgresql"
-  url               = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+
 }
 
-// Full schema is defined in Phase 3.
-// The tables listed in the Phase 1 architecture document will be implemented there:
-//   users, user_auth, wallets, ledger_entries, transactions, transaction_fees,
-//   receipts, idempotency_keys, audit_logs, device_sessions, kyc_attempts,
-//   beneficiaries, payment_requests, notifications, notification_prefs,
-//   conversations, webhooks, disputes, reversals, admin_actions, qr_codes
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum KycStatus {
+  pending
+  passed
+  failed
+  error
+}
+
+enum TransactionType {
+  transfer_internal
+  transfer_bank
+  bill_payment
+  qr_payment
+  terminal_payment // reserved for future use — terminal mode not in v1
+  reversal
+  fee
+  funding          // funding flow TBD — kept in enum per Phase 1 open assumption #18
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  processing
+  completed
+  failed
+  reversed
+  disputed
+}
+
+enum LedgerEntryType {
+  credit
+  debit
+}
+
+enum InitiatorType {
+  user
+  system
+  admin
+  terminal // reserved for future use
+  bot
+}
+
+enum DisputeStatus {
+  open
+  closed_no_action
+  reversed
+  escalated
+}
+
+enum NotificationChannel {
+  push
+  email
+  sms
+}
+
+enum NotificationStatus {
+  pending
+  delivered
+  failed
+}
+
+enum BeneficiaryType {
+  internal // saved FlowKey-to-FlowKey recipient
+  bank     // saved bank account for withdrawals
+}
+
+enum AdminRole {
+  admin
+  super_admin
+}
+
+enum AccountStatus {
+  pending_verification
+  active
+  frozen
+  closed
+}
+
+enum BotSessionStatus {
+  active
+  completed
+  expired
+  terminated
+}
+
+enum BotState {
+  idle
+  intent_captured
+  structured_command
+  awaiting_confirmation
+  pin_entry
+  executing
+  completed
+  failed
+}
+
+enum WebhookProcessingStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum QrCodeType {
+  static  // profile QR — no expiry
+  dynamic // payment QR — 24h expiry by default
+}
+
+// =============================================================================
+// TABLES
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// users
+// Core user profile. Wallet and auth data are in separate tables.
+// -----------------------------------------------------------------------------
+model User {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone             String        @unique @db.VarChar(20)
+  email             String        @unique @db.VarChar(255)
+  display_name      String        @db.VarChar(100)
+  universal_id      String        @unique @db.VarChar(20)  // format: WORD-WORD-NNNN
+  kyc_tier          Int           @default(0) @db.SmallInt // 0–3, enforced at app layer
+  account_status    AccountStatus @default(pending_verification)
+  deleted_at        DateTime?     @db.Timestamptz
+  created_at        DateTime      @default(now()) @db.Timestamptz
+  updated_at        DateTime      @updatedAt @db.Timestamptz
+
+  // Relations
+  auth              UserAuth?
+  wallet            Wallet?
+  device_sessions   DeviceSession[]
+  kyc_attempts      KycAttempt[]
+  transactions_sent Transaction[]        @relation("TransactionInitiator")
+  notifications     Notification[]
+  notification_pref NotificationPref?
+  conversations     Conversation[]
+  disputes          Dispute[]
+  beneficiaries     Beneficiary[]
+  qr_codes          QrCode[]
+  payment_requests_sent     PaymentRequest[] @relation("PaymentRequestSender")
+  payment_requests_received PaymentRequest[] @relation("PaymentRequestReceiver")
+  audit_logs        AuditLog[]
+
+  @@index([phone])
+  @@index([email])
+  @@index([universal_id])
+  @@index([account_status])
+  @@index([kyc_tier])
+  @@index([deleted_at])
+  @@map("users")
+}
+
+// -----------------------------------------------------------------------------
+// user_auth
+// Separated auth table — PIN/passcode hashes are never in the users table.
+// One row per user. Compromise of one factor must not expose others.
+// -----------------------------------------------------------------------------
+model UserAuth {
+  id                              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                         String    @unique @db.Uuid
+
+  // Login passcode (6-digit) — Argon2id hash
+  login_passcode_hash             String    @db.VarChar(255)
+  login_passcode_failed_attempts  Int       @default(0) @db.SmallInt
+  login_passcode_locked_until     DateTime? @db.Timestamptz
+  login_passcode_hard_locked      Boolean   @default(false)
+  login_passcode_lockout_count    Int       @default(0) @db.SmallInt
+
+  // Transaction PIN (4-digit) — Argon2id hash
+  transaction_pin_hash            String?   @db.VarChar(255) // nullable until user sets it
+  transaction_pin_failed_attempts Int       @default(0) @db.SmallInt
+  transaction_pin_locked_until    DateTime? @db.Timestamptz
+  transaction_pin_hard_locked     Boolean   @default(false)
+  transaction_pin_lockout_count   Int       @default(0) @db.SmallInt
+
+  // Argon2id parameters stored alongside hash for future algorithm migration.
+  // Format: JSON string {"m":65536,"t":3,"p":4,"l":32}
+  argon2_params                   String    @db.VarChar(100)
+
+  created_at                      DateTime  @default(now()) @db.Timestamptz
+  updated_at                      DateTime  @updatedAt @db.Timestamptz
+
+  // Relations
+  user                            User      @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@map("user_auth")
+}
+
+// -----------------------------------------------------------------------------
+// admins
+// Separate table — admins are operators, not customers.
+// No wallet, no KYC, no ledger entries for admins.
+// -----------------------------------------------------------------------------
+model Admin {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email           String    @unique @db.VarChar(255)
+  display_name    String    @db.VarChar(100)
+  role            AdminRole @default(admin)
+  passcode_hash   String    @db.VarChar(255) // Argon2id
+  argon2_params   String    @db.VarChar(100)
+  mfa_secret      String?   @db.VarChar(255) // TOTP secret — AES-256-GCM encrypted at rest
+  mfa_enabled     Boolean   @default(false)
+  is_active       Boolean   @default(true)
+  deleted_at      DateTime? @db.Timestamptz
+  created_at      DateTime  @default(now()) @db.Timestamptz
+  updated_at      DateTime  @updatedAt @db.Timestamptz
+
+  // Relations
+  device_sessions AdminSession[]
+  admin_actions   AdminAction[]
+  reversals       Reversal[]
+  kyc_overrides   KycAttempt[]   @relation("KycAdminOverride")
+
+  @@index([email])
+  @@index([role])
+  @@index([is_active])
+  @@map("admins")
+}
+
+// -----------------------------------------------------------------------------
+// admin_sessions
+// Separate session table for admins — never mixed with user device sessions.
+// -----------------------------------------------------------------------------
+model AdminSession {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id      String    @db.Uuid
+  refresh_token String    @unique @db.VarChar(512) // hashed opaque token
+  device_id     String    @db.VarChar(255)
+  ip_address    String    @db.VarChar(45)  // supports IPv6
+  user_agent    String    @db.VarChar(512)
+  is_revoked    Boolean   @default(false)
+  expires_at    DateTime  @db.Timestamptz
+  last_active   DateTime  @default(now()) @db.Timestamptz
+  created_at    DateTime  @default(now()) @db.Timestamptz
+
+  // Relations
+  admin         Admin     @relation(fields: [admin_id], references: [id])
+
+  @@index([admin_id])
+  @@index([refresh_token])
+  @@index([is_revoked])
+  @@map("admin_sessions")
+}
+
+// -----------------------------------------------------------------------------
+// wallets
+// One wallet per user. No balance column — balance is always derived.
+// Balance = SUM(credits) - SUM(debits) from ledger_entries WHERE wallet_id = ?
+// -----------------------------------------------------------------------------
+model Wallet {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @unique @db.Uuid
+  deleted_at DateTime? @db.Timestamptz
+  created_at DateTime  @default(now()) @db.Timestamptz
+  updated_at DateTime  @updatedAt @db.Timestamptz
+
+  // Relations
+  user           User           @relation(fields: [user_id], references: [id])
+  ledger_entries LedgerEntry[]
+
+  @@index([user_id])
+  @@map("wallets")
+}
+
+// -----------------------------------------------------------------------------
+// ledger_entries
+// IMMUTABLE. Append-only enforced by PostgreSQL trigger (see migration).
+// Double-entry: every financial event produces exactly one debit + one credit.
+// Both entries reference the same transaction_id.
+// No UPDATE or DELETE ever — the trigger raises an exception on any attempt.
+// -----------------------------------------------------------------------------
+model LedgerEntry {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  wallet_id      String          @db.Uuid
+  transaction_id String          @db.Uuid
+  type           LedgerEntryType // credit | debit
+  amount         BigInt          // kobo — always positive
+  created_at     DateTime        @default(now()) @db.Timestamptz
+
+  // Relations
+  wallet         Wallet          @relation(fields: [wallet_id], references: [id])
+  transaction    Transaction     @relation(fields: [transaction_id], references: [id])
+
+  @@index([wallet_id])
+  @@index([transaction_id])
+  @@index([wallet_id, type])        // for balance derivation query
+  @@index([created_at])
+  @@map("ledger_entries")
+}
+
+// -----------------------------------------------------------------------------
+// transactions
+// Full record of every financial event.
+// -----------------------------------------------------------------------------
+model Transaction {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type             TransactionType
+  status           TransactionStatus @default(pending)
+  amount           BigInt            // kobo
+  fee              BigInt            @default(0) // kobo
+  net_amount       BigInt            // kobo — amount - fee for debits
+  narration        String?           @db.VarChar(255)
+  reference        String            @unique @db.VarChar(64) // system-generated, globally unique
+  idempotency_key  String            @unique @db.Uuid
+  initiator_id     String            @db.Uuid   // user_id or admin_id or system constant
+  initiator_type   InitiatorType
+  sender_wallet_id String?           @db.Uuid   // null for funding
+  receiver_wallet_id String?         @db.Uuid   // null for bank withdrawals
+  metadata         Json?             // provider refs, bot_session_id, qr_code_id, etc.
+  completed_at     DateTime?         @db.Timestamptz
+  deleted_at       DateTime?         @db.Timestamptz
+  created_at       DateTime          @default(now()) @db.Timestamptz
+  updated_at       DateTime          @updatedAt @db.Timestamptz
+
+  // Relations
+  ledger_entries   LedgerEntry[]
+  transaction_fees TransactionFee[]
+  receipt          Receipt?
+  dispute          Dispute?
+  reversal_source  Reversal?        @relation("ReversalSource")
+  reversal_record  Reversal?        @relation("ReversalTransaction")
+  idempotency      IdempotencyKey?
+  initiator        User?            @relation("TransactionInitiator", fields: [initiator_id], references: [id], map: "transactions_initiator_user_fk")
+
+  @@index([reference])
+  @@index([idempotency_key])
+  @@index([status])
+  @@index([type])
+  @@index([initiator_id])
+  @@index([sender_wallet_id])
+  @@index([receiver_wallet_id])
+  @@index([created_at])
+  @@index([status, created_at])     // for reconciliation jobs
+  @@map("transactions")
+}
+
+// -----------------------------------------------------------------------------
+// transaction_fees
+// Fee breakdown per transaction.
+// -----------------------------------------------------------------------------
+model TransactionFee {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id String      @db.Uuid
+  description    String      @db.VarChar(100) // e.g. "platform_fee", "provider_fee"
+  amount         BigInt      // kobo
+  created_at     DateTime    @default(now()) @db.Timestamptz
+
+  // Relations
+  transaction    Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([transaction_id])
+  @@map("transaction_fees")
+}
+
+// -----------------------------------------------------------------------------
+// idempotency_keys
+// Prevents duplicate execution of financial write endpoints.
+// Key stored with SHA-256 hash of normalized request body.
+// Duplicate key + matching hash → return original response.
+// Duplicate key + different hash → reject 422 + fraud flag.
+// -----------------------------------------------------------------------------
+model IdempotencyKey {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key             String      @unique @db.Uuid  // client-provided UUID v4
+  user_id         String      @db.Uuid
+  request_hash    String      @db.VarChar(64)   // SHA-256 hex of normalized request body
+  response_snapshot Json                         // original response — returned on duplicate
+  status          String      @db.VarChar(20)   // pending | completed | failed
+  transaction_id  String?     @unique @db.Uuid
+  expires_at      DateTime    @db.Timestamptz   // 24h TTL
+  created_at      DateTime    @default(now()) @db.Timestamptz
+
+  // Relations
+  transaction     Transaction? @relation(fields: [transaction_id], references: [id])
+
+  @@index([key])
+  @@index([user_id])
+  @@index([expires_at])             // for cleanup job
+  @@map("idempotency_keys")
+}
+
+// -----------------------------------------------------------------------------
+// receipts
+// One receipt per completed transaction.
+// PDF stored as signed URL — not the binary itself.
+// -----------------------------------------------------------------------------
+model Receipt {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id  String      @unique @db.Uuid
+  public_token    String      @unique @db.Uuid  // UUID v4 in public URL — unguessable
+  signed_url      String?     @db.VarChar(2048) // HMAC-signed download URL
+  signed_url_expires_at DateTime? @db.Timestamptz
+  pdf_generated   Boolean     @default(false)
+  created_at      DateTime    @default(now()) @db.Timestamptz
+  updated_at      DateTime    @updatedAt @db.Timestamptz
+
+  // Relations
+  transaction     Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([transaction_id])
+  @@index([public_token])
+  @@map("receipts")
+}
+
+// -----------------------------------------------------------------------------
+// device_sessions
+// One row per active user session per device.
+// Refresh tokens stored as hashes — never plaintext.
+// -----------------------------------------------------------------------------
+model DeviceSession {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String    @db.Uuid
+  device_id       String    @db.VarChar(255)  // client-generated, stored in SecureStore
+  refresh_token   String    @unique @db.VarChar(512) // hashed opaque token
+  ip_address      String    @db.VarChar(45)   // supports IPv6
+  user_agent      String    @db.VarChar(512)
+  is_revoked      Boolean   @default(false)
+  expires_at      DateTime  @db.Timestamptz
+  last_active     DateTime  @default(now()) @db.Timestamptz
+  created_at      DateTime  @default(now()) @db.Timestamptz
+
+  // Relations
+  user            User      @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([device_id])
+  @@index([refresh_token])
+  @@index([user_id, device_id])
+  @@index([is_revoked])
+  @@index([expires_at])
+  @@map("device_sessions")
+}
+
+// -----------------------------------------------------------------------------
+// kyc_attempts
+// Every KYC verification attempt — pass, fail, or provider error.
+// Immutable once created — status updated, nothing else.
+// NIN/BVN digits are NOT retained post-verification.
+// -----------------------------------------------------------------------------
+model KycAttempt {
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String     @db.Uuid
+  tier_target     Int        @db.SmallInt  // 1, 2, or 3
+  status          KycStatus  @default(pending)
+  failure_reason  String?    @db.VarChar(255) // sanitized — no raw Prembly error
+  metadata        Json?      // sanitized Prembly request/response — no raw NIN/BVN digits
+  cooldown_until  DateTime?  @db.Timestamptz  // set on identity failure, not provider error
+  is_admin_override Boolean  @default(false)
+  overridden_by   String?    @db.Uuid  // admin_id if manually overridden
+  created_at      DateTime   @default(now()) @db.Timestamptz
+  updated_at      DateTime   @updatedAt @db.Timestamptz
+
+  // Relations
+  user            User       @relation(fields: [user_id], references: [id])
+  admin           Admin?     @relation("KycAdminOverride", fields: [overridden_by], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([user_id, tier_target])
+  @@index([created_at])
+  @@map("kyc_attempts")
+}
+
+// -----------------------------------------------------------------------------
+// beneficiaries
+// Saved recipients — both internal (FlowKey) and bank accounts.
+// Bank account numbers stored AES-256-GCM encrypted.
+// -----------------------------------------------------------------------------
+model Beneficiary {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String          @db.Uuid
+  type              BeneficiaryType
+
+  // Internal recipient fields (type = internal)
+  recipient_user_id String?         @db.Uuid
+  recipient_name    String?         @db.VarChar(100)
+
+  // Bank account fields (type = bank)
+  bank_code         String?         @db.VarChar(10)
+  bank_name         String?         @db.VarChar(100)
+  account_number    String?         @db.VarChar(512) // AES-256-GCM encrypted
+  account_name      String?         @db.VarChar(100) // verified via name enquiry
+  account_verified  Boolean         @default(false)
+  account_verified_at DateTime?     @db.Timestamptz
+
+  nickname          String?         @db.VarChar(50)
+  deleted_at        DateTime?       @db.Timestamptz
+  created_at        DateTime        @default(now()) @db.Timestamptz
+  updated_at        DateTime        @updatedAt @db.Timestamptz
+
+  // Relations
+  user              User            @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([user_id, type])
+  @@index([deleted_at])
+  @@map("beneficiaries")
+}
+
+// -----------------------------------------------------------------------------
+// payment_requests
+// Incoming payment request lifecycle (request money from another user).
+// -----------------------------------------------------------------------------
+model PaymentRequest {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sender_id     String    @db.Uuid  // user requesting payment
+  receiver_id   String    @db.Uuid  // user being asked to pay
+  amount        BigInt    // kobo
+  narration     String?   @db.VarChar(255)
+  status        String    @db.VarChar(20) // pending | paid | declined | expired | cancelled
+  expires_at    DateTime  @db.Timestamptz
+  paid_at       DateTime? @db.Timestamptz
+  deleted_at    DateTime? @db.Timestamptz
+  created_at    DateTime  @default(now()) @db.Timestamptz
+  updated_at    DateTime  @updatedAt @db.Timestamptz
+
+  // Relations
+  sender        User      @relation("PaymentRequestSender", fields: [sender_id], references: [id])
+  receiver      User      @relation("PaymentRequestReceiver", fields: [receiver_id], references: [id])
+
+  @@index([sender_id])
+  @@index([receiver_id])
+  @@index([status])
+  @@index([expires_at])
+  @@map("payment_requests")
+}
+
+// -----------------------------------------------------------------------------
+// notifications
+// Delivery queue and log per notification event.
+// All notifications queued via BullMQ — never sent synchronously.
+// -----------------------------------------------------------------------------
+model Notification {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String              @db.Uuid
+  channel        NotificationChannel
+  status         NotificationStatus  @default(pending)
+  event_type     String              @db.VarChar(50)  // e.g. "transaction.completed"
+  title          String              @db.VarChar(255)
+  body           String              @db.Text
+  metadata       Json?               // provider message ID, delivery receipt, etc.
+  attempts       Int                 @default(0) @db.SmallInt
+  last_attempted DateTime?           @db.Timestamptz
+  delivered_at   DateTime?           @db.Timestamptz
+  created_at     DateTime            @default(now()) @db.Timestamptz
+  updated_at     DateTime            @updatedAt @db.Timestamptz
+
+  // Relations
+  user           User                @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([channel])
+  @@index([event_type])
+  @@index([created_at])
+  @@map("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// notification_prefs
+// One row per user — created at registration with defaults.
+// Security notifications (account_locked, pin_changed, new_device_login)
+// cannot be disabled — enforced at application layer.
+// -----------------------------------------------------------------------------
+model NotificationPref {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String   @unique @db.Uuid
+
+  // Transactional notifications
+  push_transactions    Boolean  @default(true)
+  email_transactions   Boolean  @default(true)
+  sms_transactions     Boolean  @default(false)
+
+  // Marketing / general
+  push_marketing       Boolean  @default(false)
+  email_marketing      Boolean  @default(false)
+
+  // Security — these cannot be set to false (enforced at app layer)
+  // They exist here as columns only to make the preference model consistent
+  push_security        Boolean  @default(true)
+  email_security       Boolean  @default(true)
+
+  created_at           DateTime @default(now()) @db.Timestamptz
+  updated_at           DateTime @updatedAt @db.Timestamptz
+
+  // Relations
+  user                 User     @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@map("notification_prefs")
+}
+
+// -----------------------------------------------------------------------------
+// conversations
+// Bot session state and full message history.
+// Phase 16 wires LLM integration — this table is scaffolded now.
+// -----------------------------------------------------------------------------
+model Conversation {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String           @db.Uuid
+  status          BotSessionStatus @default(active)
+  state           BotState         @default(idle)
+  intent_count    Int              @default(0) @db.SmallInt // max 5 per session
+  messages        Json             @default("[]") // full message history array
+  context         Json?            // structured command being built
+  expires_at      DateTime         @db.Timestamptz  // 15-min inactivity TTL
+  ended_at        DateTime?        @db.Timestamptz
+  created_at      DateTime         @default(now()) @db.Timestamptz
+  updated_at      DateTime         @updatedAt @db.Timestamptz
+
+  // Relations
+  user            User             @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([expires_at])
+  @@map("conversations")
+}
+
+// -----------------------------------------------------------------------------
+// webhooks
+// Inbound webhook log — one row per received webhook event.
+// Written by the BullMQ worker after queuing, not in the HTTP handler.
+// -----------------------------------------------------------------------------
+model Webhook {
+  id                String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider          String                  @db.VarChar(50)  // "prembly" | "providus" | etc.
+  webhook_id        String                  @db.VarChar(255) // provider-assigned event ID
+  event_type        String                  @db.VarChar(100)
+  hmac_verified     Boolean
+  processing_status WebhookProcessingStatus @default(queued)
+  payload_hash      String                  @db.VarChar(64)  // SHA-256 of raw payload
+  error_message     String?                 @db.Text
+  created_at        DateTime                @default(now()) @db.Timestamptz
+  updated_at        DateTime                @updatedAt @db.Timestamptz
+
+  @@unique([provider, webhook_id]) // deduplication constraint
+  @@index([provider])
+  @@index([processing_status])
+  @@index([created_at])
+  @@map("webhooks")
+}
+
+// -----------------------------------------------------------------------------
+// disputes
+// User-initiated dispute lifecycle.
+// -----------------------------------------------------------------------------
+model Dispute {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String        @db.Uuid
+  transaction_id String        @unique @db.Uuid // one active dispute per transaction
+  status         DisputeStatus @default(open)
+  reason_category String       @db.VarChar(50)
+  description    String        @db.Text
+  resolution_note String?      @db.Text
+  resolved_by    String?       @db.Uuid  // admin_id
+  resolved_at    DateTime?     @db.Timestamptz
+  deleted_at     DateTime?     @db.Timestamptz
+  created_at     DateTime      @default(now()) @db.Timestamptz
+  updated_at     DateTime      @updatedAt @db.Timestamptz
+
+  // Relations
+  user           User          @relation(fields: [user_id], references: [id])
+  transaction    Transaction   @relation(fields: [transaction_id], references: [id])
+
+  @@index([user_id])
+  @@index([transaction_id])
+  @@index([status])
+  @@index([created_at])
+  @@map("disputes")
+}
+
+// -----------------------------------------------------------------------------
+// reversals
+// Admin-initiated reversal records. Linked to original + compensating tx.
+// -----------------------------------------------------------------------------
+model Reversal {
+  id                      String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  original_transaction_id String      @unique @db.Uuid
+  reversal_transaction_id String      @unique @db.Uuid
+  admin_id                String      @db.Uuid
+  reason_code             String      @db.VarChar(50)
+  note                    String      @db.Text
+  created_at              DateTime    @default(now()) @db.Timestamptz
+
+  // Relations
+  original_transaction    Transaction @relation("ReversalSource", fields: [original_transaction_id], references: [id])
+  reversal_transaction    Transaction @relation("ReversalTransaction", fields: [reversal_transaction_id], references: [id])
+  admin                   Admin       @relation(fields: [admin_id], references: [id])
+
+  @@index([original_transaction_id])
+  @@index([admin_id])
+  @@map("reversals")
+}
+
+// -----------------------------------------------------------------------------
+// admin_actions
+// Immutable log of every admin API operation.
+// -----------------------------------------------------------------------------
+model AdminAction {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id    String    @db.Uuid
+  action      String    @db.VarChar(100) // e.g. "user.freeze", "kyc.override"
+  target_type String    @db.VarChar(50)  // "user" | "transaction" | "kyc_attempt" | etc.
+  target_id   String    @db.Uuid
+  reason      String?   @db.Text
+  metadata    Json?
+  created_at  DateTime  @default(now()) @db.Timestamptz
+
+  // Relations
+  admin       Admin     @relation(fields: [admin_id], references: [id])
+
+  @@index([admin_id])
+  @@index([action])
+  @@index([target_id])
+  @@index([created_at])
+  @@map("admin_actions")
+}
+
+// -----------------------------------------------------------------------------
+// qr_codes
+// Generated QR payloads with HMAC signature and optional expiry.
+// -----------------------------------------------------------------------------
+model QrCode {
+  id            String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String     @db.Uuid
+  type          QrCodeType
+  amount        BigInt?    // kobo — null for open-amount QR
+  narration     String?    @db.VarChar(255)
+  payload       String     @db.Text   // full QR payload string
+  hmac_sig      String     @db.VarChar(128) // HMAC-SHA256 signature of payload
+  expires_at    DateTime?  @db.Timestamptz  // null for static QR
+  is_active     Boolean    @default(true)
+  created_at    DateTime   @default(now()) @db.Timestamptz
+
+  // Relations
+  user          User       @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([is_active])
+  @@index([expires_at])
+  @@map("qr_codes")
+}
+
+// -----------------------------------------------------------------------------
+// audit_logs
+// IMMUTABLE. Append-only enforced by PostgreSQL trigger (see migration).
+// Hash-chained: each entry stores SHA-256(previous_entry.id || previous_entry.created_at).
+// The genesis entry has previous_hash = 'GENESIS'.
+// No UPDATE or DELETE ever.
+// -----------------------------------------------------------------------------
+model AuditLog {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actor_id      String?   @db.Uuid   // user_id, admin_id, or null for system events
+  actor_type    String    @db.VarChar(20) // "user" | "admin" | "system"
+  action        String    @db.VarChar(100)
+  target_type   String?   @db.VarChar(50)
+  target_id     String?   @db.Uuid
+  metadata      Json?
+  ip_address    String?   @db.VarChar(45)
+  previous_hash String    @db.VarChar(64) // SHA-256 hex — chain integrity
+  created_at    DateTime  @default(now()) @db.Timestamptz
+
+  // Relations (actor can be user or admin — only one will be non-null)
+  user          User?     @relation(fields: [actor_id], references: [id], map: "audit_logs_user_fk")
+
+  @@index([actor_id])
+  @@index([action])
+  @@index([target_id])
+  @@index([created_at])
+  @@map("audit_logs")
+}
