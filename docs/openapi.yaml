@@ -1,0 +1,4107 @@
+openapi: 3.1.0
+
+info:
+  title: FlowKey API
+  version: 0.1.0
+  description: |
+    FlowKey — wallet-based fintech orchestration platform.
+    Production-grade backend API. Nigerian Naira (NGN) only.
+
+    ## Monetary values
+    All `amount`, `fee`, and `net_amount` fields are **integers in kobo** (NGN × 100).
+    The display layer converts to naira. Never send or expect floats.
+
+    ## Authentication
+    All protected endpoints require:
+    ```
+    Authorization: Bearer <access_token>
+    ```
+    Access tokens are RS256 JWTs with a 15-minute TTL.
+    Refresh tokens are opaque 256-bit values, 30-day TTL.
+    Both are stored in OS secure enclave (Expo SecureStore / RN Keychain) on the client.
+
+    ## Idempotency
+    All state-mutating endpoints (`POST`, `PATCH`, `DELETE` that write) require:
+    ```
+    Idempotency-Key: <uuid-v4>
+    ```
+    Generate a fresh UUID v4 per request. Reusing a key with a different payload returns HTTP 422.
+
+    ## Response envelope
+    Every response — success or error — uses this envelope:
+    ```json
+    {
+      "success": true,
+      "data": {},
+      "meta": { "cursor": "...", "has_more": false },
+      "error": null
+    }
+    ```
+
+    ## Pagination
+    All list endpoints use cursor-based pagination.
+    Pass `cursor` from the previous response's `meta.cursor` to get the next page.
+
+  contact:
+    name: FlowKey Engineering
+
+servers:
+  - url: https://api.flowkey.ng/api/v1
+    description: Production
+  - url: https://staging-api.flowkey.ng/api/v1
+    description: Staging
+  - url: http://localhost:3000/api/v1
+    description: Local development
+
+# =============================================================================
+# SECURITY SCHEMES
+# =============================================================================
+
+components:
+  securitySchemes:
+    UserAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT issued at login. 15-minute TTL. Store in SecureStore/Keychain.
+
+    AdminAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT issued at admin login. Contains role claim (admin | super_admin).
+
+    WebhookHMAC:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: HMAC-SHA256 signature of the raw request body using the provider webhook secret.
+
+  # ===========================================================================
+  # SHARED SCHEMAS
+  # ===========================================================================
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Response envelope
+    # -------------------------------------------------------------------------
+
+    SuccessResponse:
+      type: object
+      required: [success, data, meta, error]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+        error:
+          type: 'null'
+
+    ErrorResponse:
+      type: object
+      required: [success, data, meta, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        data:
+          type: 'null'
+        meta:
+          type: 'null'
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: INSUFFICIENT_BALANCE
+            message:
+              type: string
+              example: Your wallet does not have enough funds for this transaction.
+
+    PaginationMeta:
+      type: object
+      nullable: true
+      properties:
+        cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor — pass as `cursor` param on next request.
+        has_more:
+          type: boolean
+
+    # -------------------------------------------------------------------------
+    # Common field types
+    # -------------------------------------------------------------------------
+
+    KoboAmount:
+      type: integer
+      format: int64
+      minimum: 1
+      description: Amount in kobo (NGN × 100). Always a positive integer. Never a float.
+      example: 500000
+
+    UuidV4:
+      type: string
+      format: uuid
+      example: 123e4567-e89b-12d3-a456-426614174000
+
+    PhoneNumber:
+      type: string
+      pattern: '^\+234[0-9]{10}$'
+      example: '+2348012345678'
+      description: Nigerian phone number in E.164 format.
+
+    UniversalId:
+      type: string
+      pattern: '^[A-Z]+-[A-Z]+-[0-9]{4}$'
+      example: SILVER-BOLT-8182
+      description: FlowKey Universal ID. Format — WORD-WORD-NNNN. Always uppercase.
+
+    KycTier:
+      type: integer
+      enum: [0, 1, 2, 3]
+      description: |
+        KYC tier level.
+        0 = phone + email only
+        1 = NIN verified
+        2 = BVN verified
+        3 = liveness + address verified
+
+    # -------------------------------------------------------------------------
+    # User
+    # -------------------------------------------------------------------------
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        phone:
+          $ref: '#/components/schemas/PhoneNumber'
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+          example: Chukwuemeka Okafor
+        universal_id:
+          $ref: '#/components/schemas/UniversalId'
+        kyc_tier:
+          $ref: '#/components/schemas/KycTier'
+        account_status:
+          type: string
+          enum: [pending_verification, active, frozen, closed]
+        has_transaction_pin:
+          type: boolean
+          description: Whether the user has set their transaction PIN.
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Auth / Session
+    # -------------------------------------------------------------------------
+
+    AuthTokens:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: RS256 JWT. 15-minute TTL. Send as Bearer token on all authenticated requests.
+        refresh_token:
+          type: string
+          description: Opaque 256-bit token. 30-day TTL. Store in SecureStore/Keychain. Never in AsyncStorage.
+        expires_in:
+          type: integer
+          description: Access token TTL in seconds.
+          example: 900
+
+    DeviceSession:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        device_id:
+          type: string
+        ip_address:
+          type: string
+        user_agent:
+          type: string
+        last_active:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        is_current:
+          type: boolean
+          description: True if this is the session making the request.
+
+    # -------------------------------------------------------------------------
+    # Wallet & Transactions
+    # -------------------------------------------------------------------------
+
+    WalletBalance:
+      type: object
+      properties:
+        balance_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        balance_naira:
+          type: string
+          description: Display string. e.g. "₦5,000.00". Derived from balance_kobo.
+          example: "₦5,000.00"
+        wallet_id:
+          $ref: '#/components/schemas/UuidV4'
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        type:
+          type: string
+          enum:
+            - transfer_internal
+            - transfer_bank
+            - bill_payment
+            - qr_payment
+            - reversal
+            - fee
+            - funding
+            - refund
+        status:
+          type: string
+          enum: [pending, processing, completed, failed, reversed, disputed]
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        fee_kobo:
+          type: integer
+          format: int64
+          minimum: 0
+        net_amount_kobo:
+          type: integer
+          format: int64
+          minimum: 0
+        narration:
+          type: string
+          nullable: true
+        reference:
+          type: string
+          example: FLK-20260425-A1B2C3
+        direction:
+          type: string
+          enum: [credit, debit]
+          description: From the perspective of the requesting user's wallet.
+        counterparty:
+          type: object
+          nullable: true
+          description: The other party in the transaction (masked).
+          properties:
+            display_name:
+              type: string
+            masked_id:
+              type: string
+              description: First and last character of Universal ID only.
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # KYC
+    # -------------------------------------------------------------------------
+
+    KycStatus:
+      type: object
+      properties:
+        current_tier:
+          $ref: '#/components/schemas/KycTier'
+        next_tier:
+          $ref: '#/components/schemas/KycTier'
+          nullable: true
+        limits:
+          type: object
+          properties:
+            single_transaction_kobo:
+              $ref: '#/components/schemas/KoboAmount'
+            daily_kobo:
+              $ref: '#/components/schemas/KoboAmount'
+        cooldown_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: If set, user must wait until this time before retrying KYC upgrade.
+        last_attempt_status:
+          type: string
+          enum: [passed, failed, error]
+          nullable: true
+
+    KycAttempt:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        tier_target:
+          type: integer
+        status:
+          type: string
+          enum: [pending, passed, failed, error]
+        failure_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Transfers
+    # -------------------------------------------------------------------------
+
+    RecipientPreview:
+      type: object
+      description: Safe preview of a recipient shown before PIN confirmation.
+      properties:
+        user_id:
+          $ref: '#/components/schemas/UuidV4'
+        display_name:
+          type: string
+          example: Amaka O.
+        avatar_initial:
+          type: string
+          example: A
+        masked_universal_id:
+          type: string
+          example: S****-B****-8182
+          description: Partially masked Universal ID shown on confirmation screen.
+
+    TransferConfirmation:
+      type: object
+      description: Full confirmation payload shown to user before PIN entry.
+      properties:
+        recipient:
+          $ref: '#/components/schemas/RecipientPreview'
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        fee_kobo:
+          type: integer
+          format: int64
+          minimum: 0
+        net_amount_kobo:
+          type: integer
+          format: int64
+          minimum: 0
+        narration:
+          type: string
+          nullable: true
+        transfer_token:
+          type: string
+          description: |
+            Short-lived signed token (60s TTL) that authorises this specific transfer.
+            Must be submitted with the PIN in the execute step.
+            Prevents confirmation screen replay attacks.
+
+    # -------------------------------------------------------------------------
+    # Withdrawals
+    # -------------------------------------------------------------------------
+
+    BankAccountPreview:
+      type: object
+      properties:
+        bank_code:
+          type: string
+          example: "058"
+        bank_name:
+          type: string
+          example: GTBank
+        account_number:
+          type: string
+          description: Last 4 digits only for display.
+          example: "****3456"
+        account_name:
+          type: string
+          example: CHUKWUEMEKA OKAFOR
+        verified:
+          type: boolean
+
+    # -------------------------------------------------------------------------
+    # QR
+    # -------------------------------------------------------------------------
+
+    QrCode:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        type:
+          type: string
+          enum: [static, dynamic]
+        payload:
+          type: string
+          description: The raw QR payload string. Encode this as a QR image on the client.
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+          nullable: true
+        narration:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null for static QR. 24h from creation for dynamic QR.
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Beneficiaries
+    # -------------------------------------------------------------------------
+
+    Beneficiary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        type:
+          type: string
+          enum: [internal, bank]
+        nickname:
+          type: string
+          nullable: true
+        recipient_name:
+          type: string
+        masked_identifier:
+          type: string
+          description: Masked Universal ID (internal) or masked account number (bank).
+        bank_name:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Payment Requests
+    # -------------------------------------------------------------------------
+
+    PaymentRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        sender:
+          $ref: '#/components/schemas/RecipientPreview'
+        receiver:
+          $ref: '#/components/schemas/RecipientPreview'
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        narration:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, paid, declined, expired, cancelled]
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Notifications
+    # -------------------------------------------------------------------------
+
+    Notification:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        channel:
+          type: string
+          enum: [push, email, sms]
+        event_type:
+          type: string
+          example: transaction.completed
+        title:
+          type: string
+        body:
+          type: string
+        status:
+          type: string
+          enum: [pending, delivered, failed]
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationPrefs:
+      type: object
+      properties:
+        push_transactions:
+          type: boolean
+        email_transactions:
+          type: boolean
+        sms_transactions:
+          type: boolean
+        push_marketing:
+          type: boolean
+        email_marketing:
+          type: boolean
+        push_security:
+          type: boolean
+          description: Cannot be set to false. Always true.
+          readOnly: true
+        email_security:
+          type: boolean
+          description: Cannot be set to false. Always true.
+          readOnly: true
+
+    # -------------------------------------------------------------------------
+    # Receipts
+    # -------------------------------------------------------------------------
+
+    Receipt:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        transaction_id:
+          $ref: '#/components/schemas/UuidV4'
+        reference:
+          type: string
+        type:
+          type: string
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        fee_kobo:
+          type: integer
+          format: int64
+        net_amount_kobo:
+          type: integer
+          format: int64
+        narration:
+          type: string
+          nullable: true
+        sender_masked:
+          type: string
+          description: First and last character of sender display name only.
+        recipient_masked:
+          type: string
+          description: First and last character of recipient display name only.
+        status:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        download_url:
+          type: string
+          description: HMAC-signed, time-limited PDF download URL. 72h TTL.
+          nullable: true
+        public_url:
+          type: string
+          description: Publicly accessible verification URL. Cryptographically unguessable.
+
+    # -------------------------------------------------------------------------
+    # Disputes
+    # -------------------------------------------------------------------------
+
+    Dispute:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        transaction_id:
+          $ref: '#/components/schemas/UuidV4'
+        status:
+          type: string
+          enum: [open, closed_no_action, reversed, escalated]
+        reason_category:
+          type: string
+        description:
+          type: string
+        resolution_note:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Bot
+    # -------------------------------------------------------------------------
+
+    BotSession:
+      type: object
+      properties:
+        session_id:
+          $ref: '#/components/schemas/UuidV4'
+        state:
+          type: string
+          enum:
+            - idle
+            - intent_captured
+            - structured_command
+            - awaiting_confirmation
+            - pin_entry
+            - executing
+            - completed
+            - failed
+        expires_at:
+          type: string
+          format: date-time
+        intent_count:
+          type: integer
+          description: Number of transaction intents used. Max 5 per session.
+
+    BotMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        action:
+          type: object
+          nullable: true
+          description: Structured command payload when the bot proposes a transaction.
+          properties:
+            type:
+              type: string
+              enum: [transfer_preview, confirmation_required, pin_required, completed, failed]
+            payload:
+              type: object
+
+    # -------------------------------------------------------------------------
+    # Settings
+    # -------------------------------------------------------------------------
+
+    UserSettings:
+      type: object
+      properties:
+        profile:
+          type: object
+          properties:
+            display_name:
+              type: string
+            phone:
+              $ref: '#/components/schemas/PhoneNumber'
+            email:
+              type: string
+              format: email
+        notification_prefs:
+          $ref: '#/components/schemas/NotificationPrefs'
+        has_transaction_pin:
+          type: boolean
+        active_sessions_count:
+          type: integer
+
+    # -------------------------------------------------------------------------
+    # Admin
+    # -------------------------------------------------------------------------
+
+    AdminUserSummary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        phone:
+          type: string
+        email:
+          type: string
+        display_name:
+          type: string
+        universal_id:
+          $ref: '#/components/schemas/UniversalId'
+        kyc_tier:
+          $ref: '#/components/schemas/KycTier'
+        account_status:
+          type: string
+          enum: [pending_verification, active, frozen, closed]
+        created_at:
+          type: string
+          format: date-time
+
+    AdminTransactionSummary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        type:
+          type: string
+        status:
+          type: string
+        amount_kobo:
+          $ref: '#/components/schemas/KoboAmount'
+        fee_kobo:
+          type: integer
+          format: int64
+        reference:
+          type: string
+        initiator_id:
+          $ref: '#/components/schemas/UuidV4'
+        initiator_type:
+          type: string
+          enum: [user, system, admin, terminal, bot]
+        created_at:
+          type: string
+          format: date-time
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UuidV4'
+        actor_id:
+          $ref: '#/components/schemas/UuidV4'
+          nullable: true
+        actor_type:
+          type: string
+          enum: [user, admin, system]
+        action:
+          type: string
+        target_type:
+          type: string
+          nullable: true
+        target_id:
+          $ref: '#/components/schemas/UuidV4'
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+  # ===========================================================================
+  # SHARED PARAMETERS
+  # ===========================================================================
+
+  parameters:
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/UuidV4'
+      description: |
+        Client-generated UUID v4. Generate fresh per request.
+        Reusing a key with a different payload returns HTTP 422.
+
+    CursorParam:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Pagination cursor from previous response meta.cursor.
+
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  # ===========================================================================
+  # SHARED RESPONSES
+  # ===========================================================================
+
+  responses:
+
+    Unauthorized:
+      description: Missing, invalid, or expired access token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            data: null
+            meta: null
+            error:
+              code: INVALID_TOKEN
+              message: Your session has expired. Please log in again.
+
+    Forbidden:
+      description: Authenticated but not authorised for this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    UnprocessableEntity:
+      description: Validation error or business rule violation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            data: null
+            meta: null
+            error:
+              code: RATE_LIMITED
+              message: Too many requests. Please wait before trying again.
+
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalError:
+      description: Unexpected server error. No internal details exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+# =============================================================================
+# TAGS
+# =============================================================================
+
+tags:
+  - name: Auth
+    description: Registration, login, session lifecycle, OTP verification.
+  - name: KYC
+    description: Tier upgrades and identity verification status.
+  - name: Wallet
+    description: Balance and transaction history.
+  - name: Transfers
+    description: FlowKey-to-FlowKey internal transfers.
+  - name: Withdrawals
+    description: Bank withdrawals via Providus.
+  - name: Bills
+    description: Bill payments via aggregator.
+  - name: QR
+    description: QR code generation and scan-to-pay.
+  - name: Payment Requests
+    description: Request money from another FlowKey user.
+  - name: Beneficiaries
+    description: Saved recipients for fast repeat transfers.
+  - name: Notifications
+    description: Notification history.
+  - name: Receipts
+    description: Transaction receipts — authenticated and public.
+  - name: Disputes
+    description: User-initiated dispute lifecycle.
+  - name: Bot
+    description: Conversational transaction interface.
+  - name: Settings
+    description: Profile, security, session management, account.
+  - name: Admin
+    description: Internal admin operations. Requires AdminAuth.
+  - name: Webhooks
+    description: Inbound provider webhooks. Called by providers, not the mobile client.
+
+# =============================================================================
+# PATHS
+# =============================================================================
+
+paths:
+
+  # ===========================================================================
+  # AUTH
+  # ===========================================================================
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user account
+      description: |
+        Creates a new user in `pending_verification` status.
+        Sends phone OTP via SMS and email OTP to the provided addresses.
+        Both OTPs must be verified before the account becomes active.
+      operationId: registerUser
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, email, display_name, login_passcode, device_id, fcm_token]
+              properties:
+                phone:
+                  $ref: '#/components/schemas/PhoneNumber'
+                email:
+                  type: string
+                  format: email
+                display_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 100
+                login_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+                  description: 6-digit numeric passcode. Hashed with Argon2id server-side. Never stored in plaintext.
+                device_id:
+                  type: string
+                  description: Client-generated stable device identifier. Stored in SecureStore. Never changes per install.
+                fcm_token:
+                  type: string
+                  description: Firebase Cloud Messaging token for push notifications.
+      responses:
+        '201':
+          description: Registration initiated. OTPs sent.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user_id:
+                            $ref: '#/components/schemas/UuidV4'
+                          message:
+                            type: string
+                            example: Verification codes sent to your phone and email.
+                          phone_otp_expires_at:
+                            type: string
+                            format: date-time
+                          email_otp_expires_at:
+                            type: string
+                            format: date-time
+        '409':
+          description: Phone or email already registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                phone_taken:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: PHONE_ALREADY_REGISTERED
+                      message: An account with this phone number already exists.
+                email_taken:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: EMAIL_ALREADY_REGISTERED
+                      message: An account with this email address already exists.
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/verify-phone:
+    post:
+      tags: [Auth]
+      summary: Verify phone number with OTP
+      operationId: verifyPhone
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp]
+              properties:
+                user_id:
+                  $ref: '#/components/schemas/UuidV4'
+                otp:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: Phone verified successfully.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          phone_verified:
+                            type: boolean
+                            example: true
+        '422':
+          description: OTP invalid, expired, or max attempts exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: OTP_INVALID
+                      message: The code you entered is incorrect.
+                expired:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: OTP_EXPIRED
+                      message: This code has expired. Please request a new one.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/resend-phone-otp:
+    post:
+      tags: [Auth]
+      summary: Resend phone OTP
+      description: Rate limited to 3 resends within 30 minutes.
+      operationId: resendPhoneOtp
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: OTP resent.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          expires_at:
+                            type: string
+                            format: date-time
+        '429':
+          description: Resend limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                data: null
+                meta: null
+                error:
+                  code: OTP_RESEND_LIMIT_EXCEEDED
+                  message: Too many resend attempts. Please wait before trying again.
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify email address with OTP
+      operationId: verifyEmail
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp]
+              properties:
+                user_id:
+                  $ref: '#/components/schemas/UuidV4'
+                otp:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: Email verified. If phone is also verified, account becomes active and tokens are issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          email_verified:
+                            type: boolean
+                          account_active:
+                            type: boolean
+                            description: True when both phone and email are verified.
+                          tokens:
+                            $ref: '#/components/schemas/AuthTokens'
+                            nullable: true
+                            description: Issued only when account_active becomes true.
+                          user:
+                            $ref: '#/components/schemas/UserProfile'
+                            nullable: true
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/resend-email-otp:
+    post:
+      tags: [Auth]
+      summary: Resend email OTP
+      description: Rate limited to 3 resends within 30 minutes.
+      operationId: resendEmailOtp
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: OTP resent.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          expires_at:
+                            type: string
+                            format: date-time
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with phone and passcode
+      operationId: loginUser
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, login_passcode, device_id, fcm_token]
+              properties:
+                phone:
+                  $ref: '#/components/schemas/PhoneNumber'
+                login_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+                device_id:
+                  type: string
+                fcm_token:
+                  type: string
+                  description: FCM token upserted on device_session for push delivery.
+      responses:
+        '200':
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tokens:
+                            $ref: '#/components/schemas/AuthTokens'
+                          user:
+                            $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                data: null
+                meta: null
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: Incorrect phone number or passcode.
+        '403':
+          description: Account locked or frozen.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                locked:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: PASSCODE_LOCKED
+                      message: Your account is temporarily locked. Try again in 15 minutes.
+                frozen:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: ACCOUNT_FROZEN
+                      message: Your account has been frozen. Please contact support.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: |
+        Issues a new access + refresh token pair.
+        The old refresh token is immediately invalidated (rotation).
+        Presenting an already-rotated refresh token is treated as session compromise —
+        the entire session family is revoked and re-login is required.
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token, device_id]
+              properties:
+                refresh_token:
+                  type: string
+                device_id:
+                  type: string
+      responses:
+        '200':
+          description: New token pair issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthTokens'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out current session
+      description: Revokes the current device session. The refresh token is immediately invalidated.
+      operationId: logoutUser
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Logged out.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          logged_out:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Log out all sessions
+      description: Revokes all device sessions for this user across all devices.
+      operationId: logoutAllSessions
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: All sessions revoked.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessions_revoked:
+                            type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      operationId: getMe
+      security:
+        - UserAuth: []
+      responses:
+        '200':
+          description: Current user profile.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===========================================================================
+  # KYC
+  # ===========================================================================
+
+  /kyc/status:
+    get:
+      tags: [KYC]
+      summary: Get KYC tier status and limits
+      operationId: getKycStatus
+      security:
+        - UserAuth: []
+      responses:
+        '200':
+          description: Current KYC status.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KycStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /kyc/upgrade:
+    post:
+      tags: [KYC]
+      summary: Initiate KYC tier upgrade
+      description: |
+        Submits identity data for verification via Prembly.
+        Tier 1 requires NIN. Tier 2 requires BVN. Tier 3 requires liveness + address.
+        Tiers must be completed in sequence — cannot skip.
+        A 24h cooldown applies after a failed NIN attempt. 48h for BVN.
+        No cooldown on provider errors (Prembly timeout/5xx).
+      operationId: upgradeKyc
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier_target, identity_data]
+              properties:
+                tier_target:
+                  type: integer
+                  enum: [1, 2, 3]
+                identity_data:
+                  type: object
+                  description: |
+                    Tier 1: { nin: "12345678901" }
+                    Tier 2: { bvn: "12345678901" }
+                    Tier 3: { liveness_token: "...", address: { ... } }
+                  additionalProperties: true
+      responses:
+        '202':
+          description: Verification initiated. Processing asynchronously.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          attempt_id:
+                            $ref: '#/components/schemas/UuidV4'
+                          message:
+                            type: string
+                            example: Identity verification in progress. You will be notified of the result.
+        '403':
+          description: Tier sequence violation or cooldown active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sequence:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: KYC_TIER_SEQUENCE_VIOLATION
+                      message: You must complete Tier 1 before upgrading to Tier 2.
+                cooldown:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: KYC_COOLDOWN_ACTIVE
+                      message: Please wait before trying again.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /kyc/attempts:
+    get:
+      tags: [KYC]
+      summary: List KYC verification attempts
+      operationId: listKycAttempts
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: KYC attempt history.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/KycAttempt'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===========================================================================
+  # WALLET
+  # ===========================================================================
+
+  /wallet/balance:
+    get:
+      tags: [Wallet]
+      summary: Get wallet balance
+      description: |
+        Returns derived balance from the double-entry ledger.
+        Balance is never read from a cached column — always computed from ledger_entries.
+        Redis cache may serve as read layer but ledger is always source of truth.
+      operationId: getBalance
+      security:
+        - UserAuth: []
+      responses:
+        '200':
+          description: Current wallet balance.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/WalletBalance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /wallet/transactions:
+    get:
+      tags: [Wallet]
+      summary: List wallet transactions
+      operationId: listTransactions
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum:
+              - transfer_internal
+              - transfer_bank
+              - bill_payment
+              - qr_payment
+              - reversal
+              - funding
+              - refund
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processing, completed, failed, reversed, disputed]
+      responses:
+        '200':
+          description: Paginated transaction list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Transaction'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===========================================================================
+  # TRANSFERS
+  # ===========================================================================
+
+  /transfers/resolve-recipient:
+    post:
+      tags: [Transfers]
+      summary: Resolve a recipient by username or Universal ID
+      description: |
+        Timing-safe lookup — response time and shape are identical whether
+        the recipient exists or not. This prevents enumeration attacks.
+        Returns a transfer_token valid for 60 seconds if recipient is found.
+        The transfer_token must be submitted with the PIN in /transfers/internal.
+      operationId: resolveRecipient
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier:
+                  type: string
+                  description: Username or Universal ID (WORD-WORD-NNNN). Case-insensitive.
+                  example: SILVER-BOLT-8182
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                  description: Intended amount. Used to pre-check tier limits and balance.
+                narration:
+                  type: string
+                  maxLength: 255
+      responses:
+        '200':
+          description: |
+            Recipient found. Returns confirmation payload and short-lived transfer_token.
+            If recipient does not exist, returns the same 200 shape with recipient: null
+            (enumeration prevention — identical response time and status code).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TransferConfirmation'
+                        nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /transfers/internal:
+    post:
+      tags: [Transfers]
+      summary: Execute an internal FlowKey-to-FlowKey transfer
+      description: |
+        Requires a valid transfer_token from /transfers/resolve-recipient
+        and the user's 4-digit Transaction PIN.
+        Executes synchronously — funds move atomically in a single DB transaction.
+        Ledger entries are written under pessimistic lock (SELECT FOR UPDATE).
+      operationId: executeInternalTransfer
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transfer_token, transaction_pin, amount_kobo]
+              properties:
+                transfer_token:
+                  type: string
+                  description: Short-lived token from /transfers/resolve-recipient. 60s TTL.
+                transaction_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+                  description: User 4-digit Transaction PIN. Never stored — verified then discarded.
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                narration:
+                  type: string
+                  maxLength: 255
+      responses:
+        '200':
+          description: Transfer completed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: PIN incorrect, locked, or tier insufficient.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Insufficient balance, limit exceeded, or invalid transfer_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                insufficient:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: INSUFFICIENT_BALANCE
+                      message: Your wallet does not have enough funds for this transfer.
+                limit:
+                  value:
+                    success: false
+                    data: null
+                    meta: null
+                    error:
+                      code: TRANSACTION_LIMIT_EXCEEDED
+                      message: This transfer exceeds your single-transaction limit.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /transfers/{id}:
+    get:
+      tags: [Transfers]
+      summary: Get transfer by ID
+      operationId: getTransfer
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Transfer details.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # WITHDRAWALS
+  # ===========================================================================
+
+  /withdrawals/verify-account:
+    post:
+      tags: [Withdrawals]
+      summary: Verify a bank account via name enquiry
+      description: |
+        Calls Providus name enquiry API. Result cached for 7 days.
+        Requires Tier 1+.
+      operationId: verifyBankAccount
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bank_code, account_number]
+              properties:
+                bank_code:
+                  type: string
+                  example: "058"
+                account_number:
+                  type: string
+                  pattern: '^\d{10}$'
+      responses:
+        '200':
+          description: Account verified.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/BankAccountPreview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: KYC tier insufficient (requires Tier 1+).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Account not found or bank unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Providus name enquiry service temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /withdrawals:
+    post:
+      tags: [Withdrawals]
+      summary: Initiate a bank withdrawal
+      description: |
+        Debits the user wallet immediately.
+        Execution is async — transaction status starts as `processing`.
+        Final status is set when Providus webhook is received.
+        Requires Tier 1+.
+      operationId: initiateWithdrawal
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bank_code, account_number, amount_kobo, transaction_pin]
+              properties:
+                bank_code:
+                  type: string
+                account_number:
+                  type: string
+                  pattern: '^\d{10}$'
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                narration:
+                  type: string
+                  maxLength: 255
+                transaction_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+      responses:
+        '202':
+          description: Withdrawal initiated. Processing asynchronously.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /withdrawals/{id}:
+    get:
+      tags: [Withdrawals]
+      summary: Get withdrawal status by ID
+      operationId: getWithdrawal
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Withdrawal details.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # BILLS
+  # x-status: pending-aggregator-confirmation
+  # Field names in requestBody are placeholders — confirmed when Phase 10 begins.
+  # ===========================================================================
+
+  /bills/validate:
+    post:
+      tags: [Bills]
+      summary: Validate a bill payment before execution
+      description: |
+        Validates the bill details with the aggregator before charging the user.
+        x-status: pending-aggregator-confirmation — request shape may change.
+      operationId: validateBill
+      x-status: pending-aggregator-confirmation
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bill_type, biller_id, customer_id, amount_kobo]
+              properties:
+                bill_type:
+                  type: string
+                  example: electricity
+                  description: e.g. electricity, airtime, data, cable_tv
+                biller_id:
+                  type: string
+                  description: Aggregator-specific biller identifier.
+                customer_id:
+                  type: string
+                  description: Customer meter number, phone number, smart card number, etc.
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+      responses:
+        '200':
+          description: Bill validated. Returns confirmation payload.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          customer_name:
+                            type: string
+                          biller_name:
+                            type: string
+                          amount_kobo:
+                            $ref: '#/components/schemas/KoboAmount'
+                          fee_kobo:
+                            type: integer
+                            format: int64
+                          validation_token:
+                            type: string
+                            description: Short-lived token authorising this specific bill payment. 60s TTL.
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /bills/pay:
+    post:
+      tags: [Bills]
+      summary: Execute a bill payment
+      operationId: payBill
+      x-status: pending-aggregator-confirmation
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [validation_token, transaction_pin]
+              properties:
+                validation_token:
+                  type: string
+                  description: Token from /bills/validate. 60s TTL.
+                transaction_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+      responses:
+        '202':
+          description: Bill payment initiated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /bills/{id}:
+    get:
+      tags: [Bills]
+      summary: Get bill payment status by ID
+      operationId: getBillPayment
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Bill payment details.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # QR
+  # ===========================================================================
+
+  /qr/generate:
+    post:
+      tags: [QR]
+      summary: Generate a QR code for receiving payment
+      description: |
+        Static QR — no expiry, tied to user profile.
+        Dynamic QR — fixed amount, 24h expiry.
+        Payload is HMAC-SHA256 signed to prevent forgery.
+      operationId: generateQr
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [static, dynamic]
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                  description: Required for dynamic QR. Omit for static.
+                narration:
+                  type: string
+                  maxLength: 255
+      responses:
+        '201':
+          description: QR code generated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/QrCode'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /qr/decode:
+    post:
+      tags: [QR]
+      summary: Decode and validate a scanned QR payload
+      description: |
+        Verifies the HMAC signature on the QR payload.
+        Returns the transfer confirmation payload if valid.
+        The client scans the QR, sends the raw payload here.
+      operationId: decodeQr
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payload]
+              properties:
+                payload:
+                  type: string
+                  description: Raw QR string from scanner.
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                  description: Required if QR is static (open-amount). Ignored for dynamic QR.
+      responses:
+        '200':
+          description: QR valid. Returns transfer confirmation.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TransferConfirmation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Invalid or expired QR payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /qr/{id}:
+    get:
+      tags: [QR]
+      summary: Get QR code by ID
+      operationId: getQrCode
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: QR code details.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/QrCode'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # PAYMENT REQUESTS
+  # ===========================================================================
+
+  /payment-requests:
+    post:
+      tags: [Payment Requests]
+      summary: Request money from another FlowKey user
+      operationId: createPaymentRequest
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receiver_identifier, amount_kobo]
+              properties:
+                receiver_identifier:
+                  type: string
+                  description: Universal ID or username of the user being asked to pay.
+                amount_kobo:
+                  $ref: '#/components/schemas/KoboAmount'
+                narration:
+                  type: string
+                  maxLength: 255
+      responses:
+        '201':
+          description: Payment request created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PaymentRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      tags: [Payment Requests]
+      summary: List payment requests (sent and received)
+      operationId: listPaymentRequests
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [sent, received]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, paid, declined, expired, cancelled]
+      responses:
+        '200':
+          description: Paginated payment requests.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PaymentRequest'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /payment-requests/{id}/pay:
+    post:
+      tags: [Payment Requests]
+      summary: Pay a payment request
+      description: Executes as an internal transfer. Requires Transaction PIN.
+      operationId: payPaymentRequest
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_pin]
+              properties:
+                transaction_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+      responses:
+        '200':
+          description: Payment request paid.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /payment-requests/{id}/decline:
+    post:
+      tags: [Payment Requests]
+      summary: Decline a payment request
+      operationId: declinePaymentRequest
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Payment request declined.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PaymentRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # BENEFICIARIES
+  # ===========================================================================
+
+  /beneficiaries:
+    get:
+      tags: [Beneficiaries]
+      summary: List saved beneficiaries
+      operationId: listBeneficiaries
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [internal, bank]
+      responses:
+        '200':
+          description: Beneficiary list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Beneficiary'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Beneficiaries]
+      summary: Save a new beneficiary
+      operationId: createBeneficiary
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [internal, bank]
+                identifier:
+                  type: string
+                  description: Universal ID (internal) or account_number (bank).
+                bank_code:
+                  type: string
+                  description: Required for type=bank.
+                nickname:
+                  type: string
+                  maxLength: 50
+      responses:
+        '201':
+          description: Beneficiary saved.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Beneficiary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /beneficiaries/{id}:
+    patch:
+      tags: [Beneficiaries]
+      summary: Update beneficiary nickname
+      operationId: updateBeneficiary
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname:
+                  type: string
+                  maxLength: 50
+      responses:
+        '200':
+          description: Beneficiary updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Beneficiary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Beneficiaries]
+      summary: Remove a saved beneficiary
+      operationId: deleteBeneficiary
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Beneficiary removed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # NOTIFICATIONS
+  # ===========================================================================
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List notification history
+      operationId: listNotifications
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: channel
+          in: query
+          schema:
+            type: string
+            enum: [push, email, sms]
+      responses:
+        '200':
+          description: Notification history.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Notification'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===========================================================================
+  # RECEIPTS
+  # ===========================================================================
+
+  /receipts/{id}:
+    get:
+      tags: [Receipts]
+      summary: Get receipt by transaction ID (authenticated)
+      operationId: getReceipt
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+          description: Transaction ID.
+      responses:
+        '200':
+          description: Receipt with signed download URL.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Receipt'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /receipts/public/{token}:
+    get:
+      tags: [Receipts]
+      summary: Get receipt by public token (unauthenticated)
+      description: |
+        No authentication required. URL is cryptographically unguessable (UUID v4 token).
+        Returns machine-readable transaction summary for public verification.
+        Sender and recipient names are masked.
+      operationId: getPublicReceipt
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+          description: Public receipt token from the receipt record.
+      responses:
+        '200':
+          description: Public receipt.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Receipt'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # DISPUTES
+  # ===========================================================================
+
+  /disputes:
+    post:
+      tags: [Disputes]
+      summary: Raise a dispute on a completed transaction
+      operationId: createDispute
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id, reason_category, description]
+              properties:
+                transaction_id:
+                  $ref: '#/components/schemas/UuidV4'
+                reason_category:
+                  type: string
+                  enum:
+                    - unauthorized_transaction
+                    - amount_incorrect
+                    - transaction_not_received
+                    - duplicate_charge
+                    - other
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 1000
+      responses:
+        '201':
+          description: Dispute created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Dispute'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Dispute already exists for this transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      tags: [Disputes]
+      summary: List user disputes
+      operationId: listDisputes
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, closed_no_action, reversed, escalated]
+      responses:
+        '200':
+          description: Dispute list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Dispute'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /disputes/{id}:
+    get:
+      tags: [Disputes]
+      summary: Get dispute by ID
+      operationId: getDispute
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Dispute details.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Dispute'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # BOT
+  # x-status: scaffolded — LLM integration pending (Phase 16)
+  # ===========================================================================
+
+  /bot/sessions:
+    post:
+      tags: [Bot]
+      summary: Start a new bot session
+      description: |
+        Creates a new conversational session. 15-minute inactivity TTL.
+        Max 5 transaction intents per session.
+        Available at Tier 0.
+        x-status: scaffolded — LLM integration pending Phase 16.
+      operationId: createBotSession
+      x-status: scaffolded
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Bot session created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/BotSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /bot/sessions/{id}/message:
+    post:
+      tags: [Bot]
+      summary: Send a message in a bot session
+      description: |
+        Sends a user message and receives the bot reply.
+        The bot NEVER executes a transaction from raw text.
+        Flow: text → parsed intent → structured command → confirmation → PIN → execute.
+        PIN confirmation is handled here — the client sends the PIN in the pin_response field
+        when state is `pin_entry`.
+      operationId: sendBotMessage
+      x-status: scaffolded
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+          description: Bot session ID.
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: User's message text.
+                  maxLength: 1000
+                pin_response:
+                  type: string
+                  pattern: '^\d{4}$'
+                  description: |
+                    Transaction PIN. Only required when session state is `pin_entry`.
+                    Must never be sent in any other state.
+                confirmation:
+                  type: boolean
+                  description: |
+                    Explicit user confirmation. Only valid when state is `awaiting_confirmation`.
+      responses:
+        '200':
+          description: Bot reply.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          session:
+                            $ref: '#/components/schemas/BotSession'
+                          message:
+                            $ref: '#/components/schemas/BotMessage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Session not found or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Intent limit exceeded or invalid state transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # ===========================================================================
+  # SETTINGS
+  # ===========================================================================
+
+  /settings:
+    get:
+      tags: [Settings]
+      summary: Get all user settings
+      operationId: getSettings
+      security:
+        - UserAuth: []
+      responses:
+        '200':
+          description: User settings.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /settings/profile:
+    patch:
+      tags: [Settings]
+      summary: Update profile display name
+      operationId: updateProfile
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  minLength: 2
+                  maxLength: 100
+      responses:
+        '200':
+          description: Profile updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /settings/notification-prefs:
+    patch:
+      tags: [Settings]
+      summary: Update notification preferences
+      description: Security notifications (push_security, email_security) cannot be disabled.
+      operationId: updateNotificationPrefs
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                push_transactions:
+                  type: boolean
+                email_transactions:
+                  type: boolean
+                sms_transactions:
+                  type: boolean
+                push_marketing:
+                  type: boolean
+                email_marketing:
+                  type: boolean
+      responses:
+        '200':
+          description: Preferences updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NotificationPrefs'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /settings/passcode/change:
+    post:
+      tags: [Settings]
+      summary: Change login passcode
+      description: |
+        Requires current passcode for re-authentication before accepting new passcode.
+        Triggers a security notification on success.
+      operationId: changePasscode
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_passcode, new_passcode]
+              properties:
+                current_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+                new_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: Passcode changed. All other sessions revoked.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessions_revoked:
+                            type: integer
+                            description: Number of other sessions revoked for security.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Current passcode incorrect or account locked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /settings/passcode/forgot:
+    post:
+      tags: [Settings]
+      summary: Initiate forgot passcode recovery
+      description: |
+        Sends a 6-digit OTP to both the registered phone (SMS) and email.
+        Both must be verified via /settings/passcode/reset before a new passcode is accepted.
+      operationId: forgotPasscode
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  $ref: '#/components/schemas/PhoneNumber'
+      responses:
+        '200':
+          description: Recovery OTPs sent to phone and email.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          reset_token:
+                            type: string
+                            description: Short-lived token (15 min) to be submitted with the OTPs in /settings/passcode/reset.
+                          expires_at:
+                            type: string
+                            format: date-time
+        '404':
+          description: Phone number not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                data: null
+                meta: null
+                error:
+                  code: NOT_FOUND
+                  message: No account found with that phone number.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /settings/passcode/reset:
+    post:
+      tags: [Settings]
+      summary: Reset passcode with OTP verification
+      description: |
+        Submits both phone OTP and email OTP along with the reset_token from /settings/passcode/forgot.
+        All three must be valid to set a new passcode.
+        All active sessions are revoked on success.
+      operationId: resetPasscode
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reset_token, phone_otp, email_otp, new_passcode]
+              properties:
+                reset_token:
+                  type: string
+                phone_otp:
+                  type: string
+                  pattern: '^\d{6}$'
+                email_otp:
+                  type: string
+                  pattern: '^\d{6}$'
+                new_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: Passcode reset. All sessions revoked. New tokens issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tokens:
+                            $ref: '#/components/schemas/AuthTokens'
+        '422':
+          description: Invalid or expired OTP or reset token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /settings/pin/set:
+    post:
+      tags: [Settings]
+      summary: Set transaction PIN for the first time
+      description: |
+        Only available if the user has no transaction PIN yet.
+        Requires current login passcode for re-authentication.
+      operationId: setTransactionPin
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_passcode, transaction_pin]
+              properties:
+                login_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+                transaction_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+      responses:
+        '200':
+          description: Transaction PIN set.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          pin_set:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Passcode incorrect or PIN already set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /settings/pin/change:
+    post:
+      tags: [Settings]
+      summary: Change transaction PIN
+      description: Requires current transaction PIN for re-authentication.
+      operationId: changeTransactionPin
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_pin, new_pin]
+              properties:
+                current_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+                new_pin:
+                  type: string
+                  pattern: '^\d{4}$'
+      responses:
+        '200':
+          description: Transaction PIN changed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          changed:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Current PIN incorrect or locked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /settings/pin:
+    delete:
+      tags: [Settings]
+      summary: Remove transaction PIN
+      description: Requires current login passcode for re-authentication.
+      operationId: deleteTransactionPin
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_passcode]
+              properties:
+                login_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: Transaction PIN removed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /settings/sessions:
+    get:
+      tags: [Settings]
+      summary: List active device sessions
+      operationId: listSessions
+      security:
+        - UserAuth: []
+      responses:
+        '200':
+          description: Active sessions.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DeviceSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /settings/sessions/{id}:
+    delete:
+      tags: [Settings]
+      summary: Revoke a specific device session
+      description: Cannot revoke the current session — use /auth/logout for that.
+      operationId: revokeSession
+      security:
+        - UserAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          revoked:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cannot revoke current session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /settings/account:
+    delete:
+      tags: [Settings]
+      summary: Close account
+      description: |
+        Soft-deletes the user account. Requires login passcode confirmation.
+        Any outstanding balance must be zero before closure is permitted.
+        All sessions are revoked immediately.
+        This action is irreversible from the user side — requires admin intervention to undo.
+      operationId: closeAccount
+      security:
+        - UserAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_passcode, reason]
+              properties:
+                login_passcode:
+                  type: string
+                  pattern: '^\d{6}$'
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Account closed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          closed:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Passcode incorrect.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Account has outstanding balance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                data: null
+                meta: null
+                error:
+                  code: CONFLICT
+                  message: Your wallet must have a zero balance before closing your account.
+
+  # ===========================================================================
+  # ADMIN
+  # All endpoints require AdminAuth. Role enforcement noted per endpoint.
+  # ===========================================================================
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      operationId: adminListUsers
+      security:
+        - AdminAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: account_status
+          in: query
+          schema:
+            type: string
+            enum: [pending_verification, active, frozen, closed]
+        - name: kyc_tier
+          in: query
+          schema:
+            type: integer
+            enum: [0, 1, 2, 3]
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by phone, email, display name, or Universal ID.
+      responses:
+        '200':
+          description: User list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AdminUserSummary'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users/{id}:
+    get:
+      tags: [Admin]
+      summary: Get full user detail
+      operationId: adminGetUser
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Full user profile with KYC and wallet summary.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/AdminUserSummary'
+                          - type: object
+                            properties:
+                              wallet_balance_kobo:
+                                type: integer
+                                format: int64
+                              kyc_attempts:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/KycAttempt'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/freeze:
+    post:
+      tags: [Admin]
+      summary: Freeze a user account
+      description: Requires admin or super_admin role.
+      operationId: adminFreezeUser
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Account frozen.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          frozen:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/unfreeze:
+    post:
+      tags: [Admin]
+      summary: Unfreeze a user account
+      operationId: adminUnfreezeUser
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Account unfrozen.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          unfrozen:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/transactions:
+    get:
+      tags: [Admin]
+      summary: List all transactions
+      operationId: adminListTransactions
+      security:
+        - AdminAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processing, completed, failed, reversed, disputed]
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Transaction list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AdminTransactionSummary'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/transactions/{id}:
+    get:
+      tags: [Admin]
+      summary: Get transaction detail
+      operationId: adminGetTransaction
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Full transaction detail including ledger entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/AdminTransactionSummary'
+                          - type: object
+                            properties:
+                              ledger_entries:
+                                type: array
+                                items:
+                                  type: object
+                                  properties:
+                                    id:
+                                      $ref: '#/components/schemas/UuidV4'
+                                    wallet_id:
+                                      $ref: '#/components/schemas/UuidV4'
+                                    type:
+                                      type: string
+                                      enum: [credit, debit]
+                                    amount_kobo:
+                                      $ref: '#/components/schemas/KoboAmount'
+                                    created_at:
+                                      type: string
+                                      format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/transactions/{id}/reverse:
+    post:
+      tags: [Admin]
+      summary: Reverse a completed transaction
+      description: |
+        Creates a compensating transaction (type: reversal) with two new ledger entries.
+        Original transaction status → reversed.
+        Both parties notified.
+        Bill payments are not reversible.
+        Requires super_admin role.
+      operationId: adminReverseTransaction
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason_code, note]
+              properties:
+                reason_code:
+                  type: string
+                  enum:
+                    - fraud
+                    - error
+                    - dispute_resolved
+                    - compliance
+                    - other
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        '200':
+          description: Transaction reversed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          reversal_transaction_id:
+                            $ref: '#/components/schemas/UuidV4'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Requires super_admin role or transaction type is not reversible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Transaction not in completed state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/kyc/attempts:
+    get:
+      tags: [Admin]
+      summary: List all KYC attempts
+      operationId: adminListKycAttempts
+      security:
+        - AdminAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, passed, failed, error]
+        - name: user_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: KYC attempt list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/KycAttempt'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/kyc/attempts/{id}/override:
+    post:
+      tags: [Admin]
+      summary: Manually override a KYC attempt
+      description: |
+        Allows a super_admin to manually approve or reject a KYC attempt.
+        Creates an admin_actions log entry.
+        Requires super_admin role.
+      operationId: adminOverrideKyc
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason]
+              properties:
+                decision:
+                  type: string
+                  enum: [approve, reject]
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: KYC override applied.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KycAttempt'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/disputes:
+    get:
+      tags: [Admin]
+      summary: List all disputes
+      operationId: adminListDisputes
+      security:
+        - AdminAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, closed_no_action, reversed, escalated]
+      responses:
+        '200':
+          description: Dispute list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Dispute'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/disputes/{id}:
+    patch:
+      tags: [Admin]
+      summary: Update dispute status
+      description: |
+        Moves a dispute through its lifecycle.
+        closed_no_action — dispute rejected with reason.
+        reversed — triggers the reversal flow.
+        escalated — dispute sent to external provider.
+      operationId: adminUpdateDispute
+      security:
+        - AdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, resolution_note]
+              properties:
+                status:
+                  type: string
+                  enum: [closed_no_action, reversed, escalated]
+                resolution_note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        '200':
+          description: Dispute updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Dispute'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: List audit logs
+      description: Requires super_admin role.
+      operationId: adminListAuditLogs
+      security:
+        - AdminAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: actor_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: target_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UuidV4'
+      responses:
+        '200':
+          description: Audit log entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuditLog'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Get admin dashboard metrics
+      operationId: adminGetDashboard
+      security:
+        - AdminAuth: []
+      responses:
+        '200':
+          description: Dashboard metrics.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          total_users:
+                            type: integer
+                          active_users:
+                            type: integer
+                          frozen_users:
+                            type: integer
+                          total_transactions_today:
+                            type: integer
+                          total_volume_today_kobo:
+                            type: integer
+                            format: int64
+                          open_disputes:
+                            type: integer
+                          pending_kyc_attempts:
+                            type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+# =============================================================================
+# WEBHOOKS — inbound from providers, not called by mobile client
+# =============================================================================
+
+  /webhooks/v1/providus:
+    post:
+      tags: [Webhooks]
+      summary: Inbound Providus webhook
+      description: |
+        Called by Providus to deliver disbursement result events.
+        HMAC-SHA256 signature verified before any processing.
+        HTTP handler returns 200 immediately — no DB writes in handler.
+        Processing is async via BullMQ worker.
+      operationId: providusWebhook
+      security:
+        - WebhookHMAC: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Providus webhook payload — exact shape confirmed in Phase 9.
+              additionalProperties: true
+      responses:
+        '200':
+          description: Webhook received and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                    example: true
+        '401':
+          description: HMAC signature invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhooks/v1/prembly:
+    post:
+      tags: [Webhooks]
+      summary: Inbound Prembly webhook
+      description: |
+        Called by Prembly to deliver KYC verification result events.
+        HMAC-SHA256 signature verified before any processing.
+        HTTP handler returns 200 immediately — processing is async.
+      operationId: premblyWebhook
+      security:
+        - WebhookHMAC: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Prembly webhook payload — exact shape confirmed in Phase 13.
+              additionalProperties: true
+      responses:
+        '200':
+          description: Webhook received and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                    example: true
+        '401':
+          description: HMAC signature invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
