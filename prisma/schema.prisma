@@ -146,16 +146,20 @@ enum QrCodeType {
 // =============================================================================
 
 model User {
-  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone             String        @unique @db.VarChar(20)
-  email             String        @unique @db.VarChar(255)
-  display_name      String        @db.VarChar(100)
-  universal_id      String        @unique @db.VarChar(20)
-  kyc_tier          Int           @default(0) @db.SmallInt
-  account_status    AccountStatus @default(pending_verification)
-  deleted_at        DateTime?     @db.Timestamptz
-  created_at        DateTime      @default(now()) @db.Timestamptz
-  updated_at        DateTime      @updatedAt @db.Timestamptz
+  id                      String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone                   String?       @unique @db.VarChar(20)
+  email                   String?       @unique @db.VarChar(255)
+  username                String?       @unique @db.VarChar(30)
+  display_name            String?       @db.VarChar(100)
+  universal_id            String        @unique @db.VarChar(30)
+  universal_id_revoked_at DateTime?     @db.Timestamptz
+  registration_channel    String?       @db.VarChar(10)  // 'phone' | 'email'
+  registration_step       String?       @default("otp_pending") @db.VarChar(30)
+  kyc_tier                Int           @default(0) @db.SmallInt
+  account_status          AccountStatus @default(pending_verification)
+  deleted_at              DateTime?     @db.Timestamptz
+  created_at              DateTime      @default(now()) @db.Timestamptz
+  updated_at              DateTime      @updatedAt @db.Timestamptz
 
   auth                      UserAuth?
   wallet                    Wallet?
@@ -171,9 +175,11 @@ model User {
   payment_requests_sent     PaymentRequest[]     @relation("PaymentRequestSender")
   payment_requests_received PaymentRequest[]     @relation("PaymentRequestReceiver")
   audit_logs                AuditLog[]
+  universal_id_history      UniversalIdHistory[]
 
   @@index([phone])
   @@index([email])
+  @@index([username])
   @@index([universal_id])
   @@index([account_status])
   @@index([kyc_tier])
@@ -184,7 +190,7 @@ model User {
 model UserAuth {
   id                              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id                         String    @unique @db.Uuid
-  login_passcode_hash             String    @db.VarChar(255)
+  login_passcode_hash             String?   @db.VarChar(255)  // nullable until step 4 of registration
   login_passcode_failed_attempts  Int       @default(0) @db.SmallInt
   login_passcode_locked_until     DateTime? @db.Timestamptz
   login_passcode_hard_locked      Boolean   @default(false)
@@ -194,6 +200,11 @@ model UserAuth {
   transaction_pin_locked_until    DateTime? @db.Timestamptz
   transaction_pin_hard_locked     Boolean   @default(false)
   transaction_pin_lockout_count   Int       @default(0) @db.SmallInt
+  upp_hash                        String?   @db.VarChar(255)  // Universal Payment PIN
+  upp_failed_attempts             Int       @default(0) @db.SmallInt
+  upp_locked_until                DateTime? @db.Timestamptz
+  upp_hard_locked                 Boolean   @default(false)
+  upp_lockout_count               Int       @default(0) @db.SmallInt
   argon2_params                   String    @db.VarChar(100)
   created_at                      DateTime  @default(now()) @db.Timestamptz
   updated_at                      DateTime  @updatedAt @db.Timestamptz
@@ -629,6 +640,20 @@ model QrCode {
   @@index([is_active])
   @@index([expires_at])
   @@map("qr_codes")
+}
+
+model UniversalIdHistory {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String   @db.Uuid
+  universal_id   String   @unique @db.VarChar(20)
+  revoked_at     DateTime @default(now()) @db.Timestamptz
+  revoked_reason String   @default("user_requested") @db.VarChar(50)
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([universal_id])
+  @@map("universal_id_history")
 }
 
 model AuditLog {

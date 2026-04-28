@@ -52,7 +52,7 @@ export interface AccessTokenPayload {
   iat: number;
   exp: number;
   iss: string;
-  aud: string;
+  aud: string | string[];
 }
 
 export interface AdminAccessTokenPayload {
@@ -63,7 +63,7 @@ export interface AdminAccessTokenPayload {
   iat: number;
   exp: number;
   iss: string;
-  aud: string;
+  aud: string | string[];
 }
 
 // ---------------------------------------------------------------------------

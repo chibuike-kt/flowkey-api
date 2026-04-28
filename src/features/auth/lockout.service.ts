@@ -22,7 +22,7 @@
  */
 
 import { redis } from '../../common/utils/redis';
-import { AppError, ErrorCode } from '../errors/AppError';
+import { AppError, ErrorCode } from '../../common/errors/AppError';
 
 export type LockoutFactor = 'passcode' | 'pin';
 

@@ -16,7 +16,7 @@
 import * as jwt from 'jsonwebtoken';
 import { randomBytes, createHash } from 'crypto';
 import { config } from '../../config';
-import { AppError, ErrorCode } from '../errors/AppError';
+import { AppError, ErrorCode } from '../../common/errors/AppError';
 import type { AccessTokenPayload, AdminAccessTokenPayload } from './auth.types';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,8 @@ import type { AccessTokenPayload, AdminAccessTokenPayload } from './auth.types';
 
 export function issueAccessToken(payload: Omit<AccessTokenPayload, 'iat' | 'exp'>): string {
   const cfg = config();
-  return jwt.sign(payload, cfg.jwtPrivateKey, {
+  const { iss: _iss, aud: _aud, ...jwtPayload } = payload;
+  return jwt.sign(jwtPayload, cfg.jwtPrivateKey, {
     algorithm: 'RS256',
     expiresIn: cfg.jwtAccessTokenTtl,
     issuer: cfg.jwtIssuer,
@@ -37,7 +38,8 @@ export function issueAdminAccessToken(
   payload: Omit<AdminAccessTokenPayload, 'iat' | 'exp'>,
 ): string {
   const cfg = config();
-  return jwt.sign(payload, cfg.jwtPrivateKey, {
+  const { iss: _iss, aud: _aud, ...jwtPayload } = payload;
+  return jwt.sign(jwtPayload, cfg.jwtPrivateKey, {
     algorithm: 'RS256',
     expiresIn: cfg.jwtAccessTokenTtl,
     issuer: cfg.jwtIssuer,

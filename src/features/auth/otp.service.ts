@@ -19,7 +19,7 @@ import { timingSafeEqual } from 'crypto';
 import { randomInt } from 'crypto';
 import { redis } from '../../common/utils/redis';
 import { config } from '../../config';
-import { AppError, ErrorCode } from '../errors/AppError';
+import { AppError, ErrorCode } from '../../common/errors/AppError';
 import type { OtpType } from './auth.types';
 
 // ---------------------------------------------------------------------------

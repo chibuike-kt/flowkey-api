@@ -158,7 +158,7 @@ describe('Prisma schema file', () => {
 
   it('uses postgresql provider', () => {
     const schema = readSchema();
-    expect(schema).toContain('provider = "postgresql"');
+  expect(schema).toMatch(/provider\s*=\s*"postgresql"/);
   });
 
   it('uses DATABASE_URL env var', () => {

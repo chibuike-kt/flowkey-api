@@ -15,9 +15,11 @@ import { config } from './config';
 import { errorHandler } from './common/middleware/errorHandler';
 import { notFoundHandler } from './common/middleware/notFound';
 
-// Feature routers — imported here as they are built in later phases.
-// Each is a placeholder import that will be replaced with the real router.
-// import { authRouter } from './features/auth/auth.router';
+// Phase 5 — Auth & Settings routers (active)
+import { authRouter } from './features/auth/auth.router';
+import { settingsRouter } from './features/settings/settings.router';
+
+// Future phase routers — uncommented as each phase completes
 // import { kycRouter } from './features/kyc/kyc.router';
 // import { walletRouter } from './features/wallet/wallet.router';
 // import { transferRouter } from './features/transfers/transfers.router';
@@ -98,9 +100,12 @@ export function createApp(): express.Application {
   // -------------------------------------------------------------------------
   const apiPrefix = `/api/${cfg.apiVersion}`;
 
+  // Phase 5 — Active routes
+  app.use(`${apiPrefix}/auth`, authRouter);
+  app.use(`${apiPrefix}/settings`, settingsRouter);
+
   // Routes are mounted as each phase is completed.
-  // The pattern for every feature:
-  //   app.use(`${apiPrefix}/auth`, authRouter);
+  // The pattern for every future feature:
   //   app.use(`${apiPrefix}/kyc`, kycRouter);
   //   app.use(`${apiPrefix}/wallet`, walletRouter);
   //   etc.
@@ -120,9 +125,6 @@ export function createApp(): express.Application {
   // Global error handler — must be LAST, after all routes and 404
   // -------------------------------------------------------------------------
   app.use(errorHandler);
-
-  // Suppress unused variable warning — apiPrefix is used in comments above
-  void apiPrefix;
 
   return app;
 }

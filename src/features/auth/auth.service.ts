@@ -14,9 +14,9 @@
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
-import { AppError, ErrorCode } from '../errors/AppError';
+import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
-import { generateOtp, verifyOtp, resendOtp, getOtpTtl } from './otp.service';
+import { generateOtp, verifyOtp } from './otp.service';
 import { createSession, revokeOtherSessions } from './session.service';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from './lockout.service';
 import { generateUniversalId } from '../universal-id/universal-id.service';

@@ -17,7 +17,7 @@
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
 import { redis } from '../../common/utils/redis';
-import { AppError, ErrorCode } from '../errors/AppError';
+import { AppError, ErrorCode } from '../../common/errors/AppError';
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -96,7 +96,7 @@ export async function createSession(params: CreateSessionParams): Promise<AuthTo
       expires_at: expiresAt,
     },
   });
-  
+
   const accessToken = issueAccessToken({
     sub: params.userId,
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
