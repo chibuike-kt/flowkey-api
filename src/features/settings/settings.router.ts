@@ -1,79 +1,40 @@
-/**
- * FlowKey — Settings Router
- *
- * All settings endpoints. Passcode/PIN management lives here (not under /auth).
- * Forgot/reset passcode are public — no auth token required.
- */
-
 import { Router } from 'express';
-import * as AuthController from '../auth/auth.controller';
+import * as C from '../auth/auth.controller';
 import { requireAuth } from '../../common/middleware/requireAuth';
 import {
+  authRateLimit,
   forgotPasscodeRateLimit,
   userRateLimit,
-  authRateLimit,
 } from '../../common/middleware/rateLimiter';
 import { idempotencyCheck } from '../../common/middleware/idempotency';
 
 const router = Router();
 
-// ===========================================================================
-// PASSCODE MANAGEMENT
-// ===========================================================================
+// Passcode
+router.post('/passcode/change', requireAuth, authRateLimit, idempotencyCheck, C.changePasscode);
+router.post('/passcode/forgot', forgotPasscodeRateLimit, idempotencyCheck, C.forgotPasscode);
+router.post('/passcode/reset', authRateLimit, idempotencyCheck, C.resetPasscode);
 
-// POST /settings/passcode/change  (protected)
+// Transaction PIN
+router.post('/pin/set', requireAuth, authRateLimit, idempotencyCheck, C.setTransactionPin);
+router.post('/pin/change', requireAuth, authRateLimit, idempotencyCheck, C.changeTransactionPin);
+router.delete('/pin', requireAuth, idempotencyCheck, C.deleteTransactionPin);
+
+// Universal Payment PIN
+router.post('/upp/set', requireAuth, authRateLimit, idempotencyCheck, C.setUpp);
+router.post('/upp/change', requireAuth, authRateLimit, idempotencyCheck, C.changeUpp);
+
+// Universal ID
 router.post(
-  '/passcode/change',
+  '/universal-id/revoke',
   requireAuth,
   authRateLimit,
   idempotencyCheck,
-  AuthController.changePasscode,
+  C.revokeUniversalId,
 );
 
-// POST /settings/passcode/forgot  (public — no token required)
-router.post(
-  '/passcode/forgot',
-  forgotPasscodeRateLimit,
-  idempotencyCheck,
-  AuthController.forgotPasscode,
-);
-
-// POST /settings/passcode/reset  (public — uses reset_token + OTPs)
-router.post('/passcode/reset', authRateLimit, idempotencyCheck, AuthController.resetPasscode);
-
-// ===========================================================================
-// TRANSACTION PIN MANAGEMENT
-// ===========================================================================
-
-// POST /settings/pin/set  (protected)
-router.post(
-  '/pin/set',
-  requireAuth,
-  authRateLimit,
-  idempotencyCheck,
-  AuthController.setTransactionPin,
-);
-
-// POST /settings/pin/change  (protected)
-router.post(
-  '/pin/change',
-  requireAuth,
-  authRateLimit,
-  idempotencyCheck,
-  AuthController.changeTransactionPin,
-);
-
-// DELETE /settings/pin  (protected)
-router.delete('/pin', requireAuth, idempotencyCheck, AuthController.deleteTransactionPin);
-
-// ===========================================================================
-// SESSION MANAGEMENT
-// ===========================================================================
-
-// GET /settings/sessions  (protected)
-router.get('/sessions', requireAuth, userRateLimit, AuthController.listSessions);
-
-// DELETE /settings/sessions/:id  (protected)
-router.delete('/sessions/:id', requireAuth, idempotencyCheck, AuthController.revokeSession);
+// Sessions
+router.get('/sessions', requireAuth, userRateLimit, C.listSessions);
+router.delete('/sessions/:id', requireAuth, idempotencyCheck, C.revokeSession);
 
 export { router as settingsRouter };

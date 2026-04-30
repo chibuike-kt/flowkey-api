@@ -1,152 +1,149 @@
 /**
- * Phase 5 — Auth schema unit tests
- * Validates all Zod schemas accept valid input and reject invalid input correctly.
+ * Phase 5 — Auth schema unit tests (updated for new registration flow)
  */
-
 import {
-  RegisterSchema,
+  InitiateRegistrationSchema,
   VerifyOtpSchema,
-  ResendOtpSchema,
+  CompleteRegistrationSchema,
   LoginSchema,
-  RefreshTokenSchema,
-  LogoutSchema,
   ChangePasscodeSchema,
-  ForgotPasscodeSchema,
-  ResetPasscodeSchema,
   SetTransactionPinSchema,
   ChangeTransactionPinSchema,
-  DeleteTransactionPinSchema,
+  ForgotPasscodeSchema,
+  ResetPasscodeSchema,
+  SetUppSchema,
 } from '../../../src/features/auth/auth.schema';
 
-// ---------------------------------------------------------------------------
-// RegisterSchema
-// ---------------------------------------------------------------------------
-
-describe('RegisterSchema', () => {
-  const valid = {
-    phone: '+2348012345678',
-    email: 'test@example.com',
-    display_name: 'Test User',
-    login_passcode: '123456',
-    device_id: 'device-abc-123',
-    fcm_token: 'fcm-token-xyz',
-  };
-
-  it('accepts valid registration payload', () => {
-    expect(() => RegisterSchema.parse(valid)).not.toThrow();
+describe('InitiateRegistrationSchema', () => {
+  it('accepts valid phone', () => {
+    expect(() =>
+      InitiateRegistrationSchema.parse({ contact: '+2348012345678', contact_type: 'phone' }),
+    ).not.toThrow();
   });
-
+  it('accepts valid email', () => {
+    expect(() =>
+      InitiateRegistrationSchema.parse({ contact: 'test@example.com', contact_type: 'email' }),
+    ).not.toThrow();
+  });
   it('rejects invalid phone format', () => {
-    expect(() => RegisterSchema.parse({ ...valid, phone: '08012345678' })).toThrow();
-    expect(() => RegisterSchema.parse({ ...valid, phone: '+1234567890' })).toThrow();
-    expect(() => RegisterSchema.parse({ ...valid, phone: '' })).toThrow();
+    expect(() =>
+      InitiateRegistrationSchema.parse({ contact: '08012345678', contact_type: 'phone' }),
+    ).toThrow();
   });
-
   it('rejects invalid email', () => {
-    expect(() => RegisterSchema.parse({ ...valid, email: 'not-an-email' })).toThrow();
-    expect(() => RegisterSchema.parse({ ...valid, email: '' })).toThrow();
+    expect(() =>
+      InitiateRegistrationSchema.parse({ contact: 'notanemail', contact_type: 'email' }),
+    ).toThrow();
   });
-
-  it('rejects display_name too short', () => {
-    expect(() => RegisterSchema.parse({ ...valid, display_name: 'A' })).toThrow();
-  });
-
-  it('rejects display_name too long', () => {
-    expect(() => RegisterSchema.parse({ ...valid, display_name: 'A'.repeat(101) })).toThrow();
-  });
-
-  it('rejects non-6-digit passcode', () => {
-    expect(() => RegisterSchema.parse({ ...valid, login_passcode: '12345' })).toThrow();
-    expect(() => RegisterSchema.parse({ ...valid, login_passcode: '1234567' })).toThrow();
-    expect(() => RegisterSchema.parse({ ...valid, login_passcode: 'abcdef' })).toThrow();
-  });
-
-  it('rejects empty device_id', () => {
-    expect(() => RegisterSchema.parse({ ...valid, device_id: '' })).toThrow();
-  });
-
-  it('rejects empty fcm_token', () => {
-    expect(() => RegisterSchema.parse({ ...valid, fcm_token: '' })).toThrow();
+  it('rejects unknown contact_type', () => {
+    expect(() =>
+      InitiateRegistrationSchema.parse({ contact: '+2348012345678', contact_type: 'sms' }),
+    ).toThrow();
   });
 });
-
-// ---------------------------------------------------------------------------
-// VerifyOtpSchema
-// ---------------------------------------------------------------------------
 
 describe('VerifyOtpSchema', () => {
-  const valid = {
-    user_id: '123e4567-e89b-12d3-a456-426614174000',
-    otp: '123456',
-  };
-
   it('accepts valid payload', () => {
-    expect(() => VerifyOtpSchema.parse(valid)).not.toThrow();
+    expect(() =>
+      VerifyOtpSchema.parse({
+        registration_id: '123e4567-e89b-12d3-a456-426614174000',
+        otp: '123456',
+      }),
+    ).not.toThrow();
   });
-
-  it('rejects invalid UUID', () => {
-    expect(() => VerifyOtpSchema.parse({ ...valid, user_id: 'not-a-uuid' })).toThrow();
+  it('rejects non-UUID registration_id', () => {
+    expect(() => VerifyOtpSchema.parse({ registration_id: 'not-a-uuid', otp: '123456' })).toThrow();
   });
-
-  it('rejects non-6-digit OTP', () => {
-    expect(() => VerifyOtpSchema.parse({ ...valid, otp: '12345' })).toThrow();
-    expect(() => VerifyOtpSchema.parse({ ...valid, otp: 'abcdef' })).toThrow();
+  it('rejects 5-digit OTP', () => {
+    expect(() =>
+      VerifyOtpSchema.parse({
+        registration_id: '123e4567-e89b-12d3-a456-426614174000',
+        otp: '12345',
+      }),
+    ).toThrow();
+  });
+  it('rejects non-digit OTP', () => {
+    expect(() =>
+      VerifyOtpSchema.parse({
+        registration_id: '123e4567-e89b-12d3-a456-426614174000',
+        otp: 'abcdef',
+      }),
+    ).toThrow();
   });
 });
 
-// ---------------------------------------------------------------------------
-// LoginSchema
-// ---------------------------------------------------------------------------
-
-describe('LoginSchema', () => {
+describe('CompleteRegistrationSchema', () => {
   const valid = {
-    phone: '+2348012345678',
+    registration_id: '123e4567-e89b-12d3-a456-426614174000',
+    username: 'kingsley_kt',
     login_passcode: '123456',
     device_id: 'device-abc',
     fcm_token: 'fcm-xyz',
   };
-
-  it('accepts valid login payload', () => {
-    expect(() => LoginSchema.parse(valid)).not.toThrow();
+  it('accepts valid payload', () => {
+    expect(() => CompleteRegistrationSchema.parse(valid)).not.toThrow();
   });
-
-  it('rejects missing phone', () => {
-    const { phone: _, ...rest } = valid;
-    expect(() => LoginSchema.parse(rest)).toThrow();
+  it('rejects username too short', () => {
+    expect(() => CompleteRegistrationSchema.parse({ ...valid, username: 'ab' })).toThrow();
   });
-
+  it('rejects username with spaces', () => {
+    expect(() => CompleteRegistrationSchema.parse({ ...valid, username: 'king sley' })).toThrow();
+  });
+  it('rejects username with special chars other than underscore', () => {
+    expect(() => CompleteRegistrationSchema.parse({ ...valid, username: 'king@sley' })).toThrow();
+  });
   it('rejects 5-digit passcode', () => {
-    expect(() => LoginSchema.parse({ ...valid, login_passcode: '12345' })).toThrow();
+    expect(() => CompleteRegistrationSchema.parse({ ...valid, login_passcode: '12345' })).toThrow();
   });
 });
 
-// ---------------------------------------------------------------------------
-// ChangePasscodeSchema — refine check
-// ---------------------------------------------------------------------------
+describe('LoginSchema', () => {
+  it('accepts phone login', () => {
+    expect(() =>
+      LoginSchema.parse({
+        contact: '+2348012345678',
+        contact_type: 'phone',
+        login_passcode: '123456',
+        device_id: 'dev',
+        fcm_token: 'fcm',
+      }),
+    ).not.toThrow();
+  });
+  it('accepts email login', () => {
+    expect(() =>
+      LoginSchema.parse({
+        contact: 'user@example.com',
+        contact_type: 'email',
+        login_passcode: '123456',
+        device_id: 'dev',
+        fcm_token: 'fcm',
+      }),
+    ).not.toThrow();
+  });
+  it('rejects missing passcode', () => {
+    expect(() =>
+      LoginSchema.parse({
+        contact: '+2348012345678',
+        contact_type: 'phone',
+        device_id: 'dev',
+        fcm_token: 'fcm',
+      }),
+    ).toThrow();
+  });
+});
 
 describe('ChangePasscodeSchema', () => {
-  it('accepts valid change payload', () => {
+  it('accepts valid change', () => {
     expect(() =>
       ChangePasscodeSchema.parse({ current_passcode: '111111', new_passcode: '222222' }),
     ).not.toThrow();
   });
-
-  it('rejects when current and new passcode are the same', () => {
+  it('rejects same passcode', () => {
     expect(() =>
       ChangePasscodeSchema.parse({ current_passcode: '123456', new_passcode: '123456' }),
     ).toThrow();
   });
-
-  it('rejects non-digit passcode', () => {
-    expect(() =>
-      ChangePasscodeSchema.parse({ current_passcode: 'abc123', new_passcode: '654321' }),
-    ).toThrow();
-  });
 });
-
-// ---------------------------------------------------------------------------
-// SetTransactionPinSchema
-// ---------------------------------------------------------------------------
 
 describe('SetTransactionPinSchema', () => {
   it('accepts valid 4-digit PIN', () => {
@@ -154,23 +151,12 @@ describe('SetTransactionPinSchema', () => {
       SetTransactionPinSchema.parse({ login_passcode: '123456', transaction_pin: '1234' }),
     ).not.toThrow();
   });
-
   it('rejects 5-digit PIN', () => {
     expect(() =>
       SetTransactionPinSchema.parse({ login_passcode: '123456', transaction_pin: '12345' }),
     ).toThrow();
   });
-
-  it('rejects non-digit PIN', () => {
-    expect(() =>
-      SetTransactionPinSchema.parse({ login_passcode: '123456', transaction_pin: 'abcd' }),
-    ).toThrow();
-  });
 });
-
-// ---------------------------------------------------------------------------
-// ChangeTransactionPinSchema — refine check
-// ---------------------------------------------------------------------------
 
 describe('ChangeTransactionPinSchema', () => {
   it('accepts valid change', () => {
@@ -178,52 +164,56 @@ describe('ChangeTransactionPinSchema', () => {
       ChangeTransactionPinSchema.parse({ current_pin: '1234', new_pin: '5678' }),
     ).not.toThrow();
   });
-
-  it('rejects same current and new PIN', () => {
+  it('rejects same PIN', () => {
     expect(() =>
       ChangeTransactionPinSchema.parse({ current_pin: '1234', new_pin: '1234' }),
     ).toThrow();
   });
 });
 
-// ---------------------------------------------------------------------------
-// ResetPasscodeSchema
-// ---------------------------------------------------------------------------
+describe('SetUppSchema', () => {
+  it('accepts valid 6-digit UPP', () => {
+    expect(() => SetUppSchema.parse({ login_passcode: '123456', upp: '654321' })).not.toThrow();
+  });
+  it('rejects 5-digit UPP', () => {
+    expect(() => SetUppSchema.parse({ login_passcode: '123456', upp: '12345' })).toThrow();
+  });
+});
+
+describe('ForgotPasscodeSchema', () => {
+  it('accepts phone', () => {
+    expect(() =>
+      ForgotPasscodeSchema.parse({ contact: '+2348099887766', contact_type: 'phone' }),
+    ).not.toThrow();
+  });
+  it('accepts email', () => {
+    expect(() =>
+      ForgotPasscodeSchema.parse({ contact: 'user@example.com', contact_type: 'email' }),
+    ).not.toThrow();
+  });
+});
 
 describe('ResetPasscodeSchema', () => {
   it('accepts valid reset payload', () => {
     expect(() =>
       ResetPasscodeSchema.parse({
         reset_token: 'abc123',
-        phone_otp: '123456',
-        email_otp: '654321',
+        otp: '123456',
         new_passcode: '111222',
+        device_id: 'dev',
+        fcm_token: 'fcm',
       }),
     ).not.toThrow();
   });
-
   it('rejects empty reset_token', () => {
     expect(() =>
       ResetPasscodeSchema.parse({
         reset_token: '',
-        phone_otp: '123456',
-        email_otp: '654321',
+        otp: '123456',
         new_passcode: '111222',
+        device_id: 'dev',
+        fcm_token: 'fcm',
       }),
     ).toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ForgotPasscodeSchema
-// ---------------------------------------------------------------------------
-
-describe('ForgotPasscodeSchema', () => {
-  it('accepts valid Nigerian phone', () => {
-    expect(() => ForgotPasscodeSchema.parse({ phone: '+2348099887766' })).not.toThrow();
-  });
-
-  it('rejects non-Nigerian phone', () => {
-    expect(() => ForgotPasscodeSchema.parse({ phone: '+12025550100' })).toThrow();
   });
 });

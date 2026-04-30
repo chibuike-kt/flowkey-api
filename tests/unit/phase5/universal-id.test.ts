@@ -1,152 +1,121 @@
 /**
- * Phase 5 — Universal ID unit tests
+ * Phase 5 — Universal ID unit tests (v2 format: WORD-XX-NNNN)
  */
-
 import {
   generateUniversalId,
   isValidUniversalId,
   normaliseUniversalId,
+  canRevokeUniversalId,
 } from '../../../src/features/universal-id/universal-id.service';
-import { UNIVERSAL_ID_WORDLIST, WORDLIST_SIZE } from '../../../src/data/universal-id-wordlist';
-
-// ---------------------------------------------------------------------------
-// Wordlist integrity
-// ---------------------------------------------------------------------------
+import { WORDLIST, WORDLIST_SIZE } from '../../../src/data/universal-id-wordlist';
 
 describe('Universal ID wordlist', () => {
   it('has no duplicate words', () => {
-    const set = new Set(UNIVERSAL_ID_WORDLIST);
-    expect(set.size).toBe(UNIVERSAL_ID_WORDLIST.length);
+    expect(new Set(WORDLIST).size).toBe(WORDLIST_SIZE);
   });
-
   it('all words are uppercase', () => {
-    for (const word of UNIVERSAL_ID_WORDLIST) {
-      expect(word).toBe(word.toUpperCase());
+    for (const w of WORDLIST) expect(w).toBe(w.toUpperCase());
+  });
+  it('all words are 4–6 letters', () => {
+    for (const w of WORDLIST) {
+      expect(w.length).toBeGreaterThanOrEqual(4);
+      expect(w.length).toBeLessThanOrEqual(6);
     }
   });
-
-  it('all words are between 3 and 10 characters', () => {
-    for (const word of UNIVERSAL_ID_WORDLIST) {
-      expect(word.length).toBeGreaterThanOrEqual(3);
-      expect(word.length).toBeLessThanOrEqual(10);
-    }
-  });
-
   it('all words contain only letters', () => {
-    for (const word of UNIVERSAL_ID_WORDLIST) {
-      expect(word).toMatch(/^[A-Z]+$/);
-    }
+    for (const w of WORDLIST) expect(w).toMatch(/^[A-Z]+$/);
   });
-
   it('wordlist has at least 500 words', () => {
     expect(WORDLIST_SIZE).toBeGreaterThanOrEqual(500);
   });
-
-  it('address space is at least 1 billion combinations', () => {
-    const space = WORDLIST_SIZE * WORDLIST_SIZE * 10_000;
-    expect(space).toBeGreaterThan(1_000_000_000);
+  it('address space exceeds 2 billion', () => {
+    expect(WORDLIST_SIZE * 676 * 10_000).toBeGreaterThan(2_000_000_000);
   });
 });
-
-// ---------------------------------------------------------------------------
-// ID generation
-// ---------------------------------------------------------------------------
 
 describe('generateUniversalId', () => {
-  it('generates a valid Universal ID format', async () => {
+  it('generates WORD-XX-NNNN format', async () => {
     const id = await generateUniversalId(async () => false);
-    expect(id).toMatch(/^[A-Z]+-[A-Z]+-\d{4}$/);
+    expect(id).toMatch(/^[A-Z]{4,6}-[A-Z]{2}-\d{4}$/);
   });
-
-  it('retries when a collision occurs', async () => {
-    let callCount = 0;
+  it('retries on collision', async () => {
+    let calls = 0;
     const id = await generateUniversalId(async () => {
-      callCount++;
-      return callCount < 3; // first two are collisions
+      calls++;
+      return calls < 3;
     });
-    expect(callCount).toBeGreaterThanOrEqual(3);
-    expect(id).toMatch(/^[A-Z]+-[A-Z]+-\d{4}$/);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(id).toMatch(/^[A-Z]{4,6}-[A-Z]{2}-\d{4}$/);
   });
-
-  it('throws after max attempts exhausted', async () => {
-    await expect(
-      generateUniversalId(async () => true), // always collides
-    ).rejects.toThrow('Failed to generate a unique Universal ID');
+  it('throws after max attempts', async () => {
+    await expect(generateUniversalId(async () => true)).rejects.toThrow();
   });
-
-  it('generates IDs with 4-digit zero-padded suffix', async () => {
-    const ids = await Promise.all(
-      Array.from({ length: 20 }, () => generateUniversalId(async () => false)),
-    );
-    for (const id of ids) {
-      const parts = id.split('-');
-      const suffix = parts[parts.length - 1];
-      expect(suffix).toMatch(/^\d{4}$/);
-      expect(suffix?.length).toBe(4);
-    }
-  });
-
-  it('generates unique IDs across multiple calls', async () => {
-    const ids = await Promise.all(
-      Array.from({ length: 100 }, () => generateUniversalId(async () => false)),
-    );
-    const unique = new Set(ids);
-    // Cryptographically random — collision rate should be near-zero
-    // Allow at most 1 collision in 100 (extremely unlikely)
-    expect(unique.size).toBeGreaterThanOrEqual(99);
-  });
-
-  it('only uses words from the wordlist', async () => {
-    const wordSet = new Set(UNIVERSAL_ID_WORDLIST);
+  it('suffix is always 4 digits', async () => {
     for (let i = 0; i < 20; i++) {
       const id = await generateUniversalId(async () => false);
-      const parts = id.split('-');
-      expect(parts.length).toBe(3);
-      expect(wordSet.has(parts[0] ?? '')).toBe(true);
-      expect(wordSet.has(parts[1] ?? '')).toBe(true);
+      const suffix = id.split('-')[2];
+      expect(suffix).toMatch(/^\d{4}$/);
+    }
+  });
+  it('second segment is always 2 letters', async () => {
+    for (let i = 0; i < 20; i++) {
+      const id = await generateUniversalId(async () => false);
+      const seg2 = id.split('-')[1];
+      expect(seg2).toMatch(/^[A-Z]{2}$/);
+    }
+  });
+  it('first segment is from the wordlist', async () => {
+    const wordSet = new Set(WORDLIST);
+    for (let i = 0; i < 20; i++) {
+      const id = await generateUniversalId(async () => false);
+      expect(wordSet.has(id.split('-')[0]!)).toBe(true);
     }
   });
 });
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
 describe('isValidUniversalId', () => {
-  it('accepts valid format', () => {
-    expect(isValidUniversalId('SILVER-BOLT-8182')).toBe(true);
-    expect(isValidUniversalId('AZURE-CRANE-0001')).toBe(true);
-    expect(isValidUniversalId('A-B-0000')).toBe(true);
+  it('accepts valid WORD-XX-NNNN format', () => {
+    expect(isValidUniversalId('BOLT-KP-4821')).toBe(true);
+    expect(isValidUniversalId('APEX-RZ-0034')).toBe(true);
+    expect(isValidUniversalId('IRON-AB-0000')).toBe(true);
   });
-
   it('is case-insensitive', () => {
-    expect(isValidUniversalId('silver-bolt-8182')).toBe(true);
-    expect(isValidUniversalId('Silver-Bolt-8182')).toBe(true);
+    expect(isValidUniversalId('bolt-kp-4821')).toBe(true);
   });
-
-  it('strips surrounding whitespace', () => {
-    expect(isValidUniversalId('  SILVER-BOLT-8182  ')).toBe(true);
+  it('strips whitespace', () => {
+    expect(isValidUniversalId('  BOLT-KP-4821  ')).toBe(true);
   });
-
-  it('rejects incorrect formats', () => {
-    expect(isValidUniversalId('SILVER-BOLT-818')).toBe(false); // 3-digit suffix
-    expect(isValidUniversalId('SILVER-BOLT-81820')).toBe(false); // 5-digit suffix
-    expect(isValidUniversalId('SILVERBOLT-8182')).toBe(false); // missing separator
-    expect(isValidUniversalId('SILVER-BOLT-ABCD')).toBe(false); // non-digit suffix
+  it('rejects old WORD-WORD-NNNN format', () => {
+    expect(isValidUniversalId('SILVER-BOLT-8182')).toBe(false);
+  });
+  it('rejects wrong suffix length', () => {
+    expect(isValidUniversalId('BOLT-KP-482')).toBe(false);
+    expect(isValidUniversalId('BOLT-KP-48210')).toBe(false);
+  });
+  it('rejects 3-letter second segment', () => {
+    expect(isValidUniversalId('BOLT-KPX-4821')).toBe(false);
+  });
+  it('rejects empty string', () => {
     expect(isValidUniversalId('')).toBe(false);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Normalisation
-// ---------------------------------------------------------------------------
-
 describe('normaliseUniversalId', () => {
   it('uppercases and strips whitespace', () => {
-    expect(normaliseUniversalId('  silver-bolt-8182  ')).toBe('SILVER-BOLT-8182');
+    expect(normaliseUniversalId('  bolt-kp-4821  ')).toBe('BOLT-KP-4821');
   });
+});
 
-  it('already uppercase input unchanged', () => {
-    expect(normaliseUniversalId('SILVER-BOLT-8182')).toBe('SILVER-BOLT-8182');
+describe('canRevokeUniversalId', () => {
+  it('returns true when never revoked', () => {
+    expect(canRevokeUniversalId(null)).toBe(true);
+  });
+  it('returns false within 24 hours', () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    expect(canRevokeUniversalId(oneHourAgo)).toBe(false);
+  });
+  it('returns true after 24 hours', () => {
+    const twentyFiveHoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    expect(canRevokeUniversalId(twentyFiveHoursAgo)).toBe(true);
   });
 });

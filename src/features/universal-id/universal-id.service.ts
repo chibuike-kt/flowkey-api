@@ -1,84 +1,67 @@
 /**
- * FlowKey — Universal ID Service
+ * FlowKey — Universal ID Service v2
  *
- * Generates and validates Universal IDs in the format WORD-WORD-NNNN.
- * Collision-resistant: retries up to MAX_ATTEMPTS before alerting ops.
- * The wordlist is a versioned constant — never modified without a migration plan.
+ * Format: WORD-XX-NNNN
+ *   Segment 1: 4–6 letter word from curated wordlist
+ *   Segment 2: 2 cryptographically random uppercase letters (A-Z)
+ *   Segment 3: 4-digit zero-padded cryptographically random number
+ *
+ * Address space: ~1098 × 676 × 10,000 = ~7.4 billion combinations
+ *
+ * Universal IDs are:
+ *   - Auto-generated at account activation (user does not choose)
+ *   - Used by the owner to authenticate payments on foreign devices
+ *   - Revocable once per 24 hours; old IDs permanently retired
+ *   - Never reassigned to another user
  */
 
 import { randomInt } from 'crypto';
-import { UNIVERSAL_ID_WORDLIST, WORDLIST_SIZE } from '../../data/universal-id-wordlist';
+import { WORDLIST, WORDLIST_SIZE } from '../../data/universal-id-wordlist';
 import { logger } from '../../common/utils/logger';
 
-const MAX_GENERATION_ATTEMPTS = 5;
-const SUFFIX_MIN = 0;
-const SUFFIX_MAX = 9999;
+const MAX_ATTEMPTS = 5;
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const REVOKE_COOLDOWN_HOURS = 24;
 
-// Regex for validating Universal ID format
-const UNIVERSAL_ID_REGEX = /^[A-Z]+-[A-Z]+-\d{4}$/;
-
-/**
- * Generate a candidate Universal ID.
- * Uses cryptographically random values — never sequential, never time-derived.
- */
 function generateCandidate(): string {
-  const word1 = UNIVERSAL_ID_WORDLIST[randomInt(0, WORDLIST_SIZE)];
-  const word2 = UNIVERSAL_ID_WORDLIST[randomInt(0, WORDLIST_SIZE)];
-  const suffix = randomInt(SUFFIX_MIN, SUFFIX_MAX + 1)
-    .toString()
-    .padStart(4, '0');
-  return `${word1}-${word2}-${suffix}`;
+  const word = WORDLIST[randomInt(0, WORDLIST_SIZE)]!;
+  const l1 = LETTERS[randomInt(0, 26)]!;
+  const l2 = LETTERS[randomInt(0, 26)]!;
+  const num = randomInt(0, 10_000).toString().padStart(4, '0');
+  return `${word}-${l1}${l2}-${num}`;
 }
 
-/**
- * Generate a unique Universal ID.
- *
- * @param existsCheck - Async function that returns true if the ID already exists.
- *   Caller provides this to avoid coupling this service to Prisma directly.
- * @returns A unique Universal ID string.
- * @throws If MAX_GENERATION_ATTEMPTS are exhausted — signals wordlist exhaustion risk.
- */
 export async function generateUniversalId(
   existsCheck: (id: string) => Promise<boolean>,
 ): Promise<string> {
-  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const candidate = generateCandidate();
     const exists = await existsCheck(candidate);
-
-    if (!exists) {
-      return candidate;
-    }
-
+    if (!exists) return candidate;
     logger.warn('Universal ID collision — retrying', { attempt, candidate });
   }
-
-  // Exhausted all attempts — this signals wordlist exhaustion risk
-  // Alert ops and fail hard. Do not silently return a duplicate.
-  logger.error('Universal ID generation failed after max attempts', {
-    maxAttempts: MAX_GENERATION_ATTEMPTS,
+  logger.error('Universal ID exhaustion risk', {
+    alert: 'OPS_ALERT',
     wordlistSize: WORDLIST_SIZE,
-    alert: 'OPS_ALERT: Universal ID exhaustion risk. Wordlist expansion required.',
+    maxAttempts: MAX_ATTEMPTS,
   });
-
-  throw new Error(
-    'Failed to generate a unique Universal ID after maximum attempts. ' +
-      'This indicates wordlist exhaustion risk. Ops have been alerted.',
-  );
+  throw new Error('Failed to generate unique Universal ID after maximum attempts.');
 }
 
-/**
- * Validate Universal ID format.
- * Case-insensitive, whitespace-stripped before matching.
- */
 export function isValidUniversalId(input: string): boolean {
-  const normalised = input.trim().toUpperCase();
-  return UNIVERSAL_ID_REGEX.test(normalised);
+  return /^[A-Z]{4,6}-[A-Z]{2}-\d{4}$/.test(input.trim().toUpperCase());
 }
 
-/**
- * Normalise a Universal ID for storage and comparison.
- * Always uppercase, whitespace stripped.
- */
 export function normaliseUniversalId(input: string): string {
   return input.trim().toUpperCase();
+}
+
+export function canRevokeUniversalId(lastRevokedAt: Date | null): boolean {
+  if (!lastRevokedAt) return true;
+  const cooldownMs = REVOKE_COOLDOWN_HOURS * 60 * 60 * 1000;
+  return Date.now() - lastRevokedAt.getTime() >= cooldownMs;
+}
+
+export function nextRevocationAllowedAt(lastRevokedAt: Date): Date {
+  return new Date(lastRevokedAt.getTime() + REVOKE_COOLDOWN_HOURS * 60 * 60 * 1000);
 }

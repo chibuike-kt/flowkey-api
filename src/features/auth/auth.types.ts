@@ -2,30 +2,30 @@
  * FlowKey — Auth Feature Types
  */
 
-// ---------------------------------------------------------------------------
-// Request payloads
-// ---------------------------------------------------------------------------
+export interface InitiateRegistrationPayload {
+  contact: string; // phone number OR email address
+  contact_type: 'phone' | 'email';
+}
 
-export interface RegisterPayload {
-  phone: string;
-  email: string;
-  display_name: string;
+export interface VerifyOtpPayload {
+  registration_id: string; // user_id from initiate step
+  otp: string;
+}
+
+export interface CheckUsernamePayload {
+  username: string;
+}
+
+export interface CompleteRegistrationPayload {
+  registration_id: string;
+  username: string;
   login_passcode: string;
   device_id: string;
   fcm_token: string;
 }
 
-export interface VerifyOtpPayload {
-  user_id: string;
-  otp: string;
-}
-
-export interface ResendOtpPayload {
-  user_id: string;
-}
-
 export interface LoginPayload {
-  phone: string;
+  contact: string; // phone OR email
   login_passcode: string;
   device_id: string;
   fcm_token: string;
@@ -40,10 +40,7 @@ export interface LogoutPayload {
   refresh_token: string;
 }
 
-// ---------------------------------------------------------------------------
-// JWT payloads
-// ---------------------------------------------------------------------------
-
+// JWT payload — decoded from access token
 export interface AccessTokenPayload {
   sub: string; // user_id
   session_id: string;
@@ -66,48 +63,34 @@ export interface AdminAccessTokenPayload {
   aud: string | string[];
 }
 
-// ---------------------------------------------------------------------------
-// Service responses
-// ---------------------------------------------------------------------------
-
 export interface AuthTokens {
   access_token: string;
   refresh_token: string;
   expires_in: number;
 }
 
-export interface RegisterResult {
-  user_id: string;
-  phone_otp_expires_at: Date;
-  email_otp_expires_at: Date;
-}
-
-export interface VerifyEmailResult {
-  email_verified: boolean;
-  account_active: boolean;
-  tokens: AuthTokens | null;
-  user: UserProfileResult | null;
-}
-
 export interface UserProfileResult {
   id: string;
-  phone: string;
-  email: string;
-  display_name: string;
+  phone: string | null;
+  email: string | null;
+  username: string;
   universal_id: string;
   kyc_tier: number;
   account_status: string;
   has_transaction_pin: boolean;
+  has_upp: boolean; // has Universal Payment PIN set
   created_at: Date;
 }
 
-export interface LoginResult {
+export interface InitiateResult {
+  registration_id: string;
+  contact_type: 'phone' | 'email';
+  otp_expires_at: Date;
+}
+
+export interface CompleteRegistrationResult {
   tokens: AuthTokens;
   user: UserProfileResult;
 }
-
-// ---------------------------------------------------------------------------
-// OTP types
-// ---------------------------------------------------------------------------
 
 export type OtpType = 'phone' | 'email';
