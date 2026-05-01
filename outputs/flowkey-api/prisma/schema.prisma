@@ -1,0 +1,678 @@
+// =============================================================================
+// FLOWKEY — PRISMA SCHEMA v0.3.0
+// =============================================================================
+// Prisma version: 6.x (6.19.3)
+//
+// Phase 3: Full database schema — all tables, enums, relations, indexes.
+//
+// INVARIANTS (enforced by DB triggers — see migration files):
+//   - ledger_entries: append-only. No UPDATE or DELETE. Ever.
+//   - audit_logs:     append-only. No UPDATE or DELETE. Ever.
+//
+// MONETARY VALUES: All amounts are BIGINT (kobo = NGN × 100).
+//   No NUMERIC, DECIMAL, or FLOAT anywhere in this schema.
+//
+// TIMESTAMPS: All timestamps are DateTime with @db.Timestamptz.
+//   No naive timestamps anywhere.
+//
+// PRIMARY KEYS: UUID v4 via @default(dbgenerated("gen_random_uuid()")).
+//
+// SOFT DELETES: deleted_at on all user-facing tables.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum KycStatus {
+  pending
+  passed
+  failed
+  error
+}
+
+enum TransactionType {
+  transfer_internal
+  transfer_bank
+  bill_payment
+  qr_payment
+  terminal_payment
+  reversal
+  fee
+  funding
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  processing
+  completed
+  failed
+  reversed
+  disputed
+}
+
+enum LedgerEntryType {
+  credit
+  debit
+}
+
+enum InitiatorType {
+  user
+  system
+  admin
+  terminal
+  bot
+}
+
+enum DisputeStatus {
+  open
+  closed_no_action
+  reversed
+  escalated
+}
+
+enum NotificationChannel {
+  push
+  email
+  sms
+}
+
+enum NotificationStatus {
+  pending
+  delivered
+  failed
+}
+
+enum BeneficiaryType {
+  internal
+  bank
+}
+
+enum AdminRole {
+  admin
+  super_admin
+}
+
+enum AccountStatus {
+  pending_verification
+  active
+  frozen
+  closed
+}
+
+enum BotSessionStatus {
+  active
+  completed
+  expired
+  terminated
+}
+
+enum BotState {
+  idle
+  intent_captured
+  structured_command
+  awaiting_confirmation
+  pin_entry
+  executing
+  completed
+  failed
+}
+
+enum WebhookProcessingStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum QrCodeType {
+  static
+  dynamic
+}
+
+// =============================================================================
+// TABLES
+// =============================================================================
+
+model User {
+  id                      String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone                   String?       @unique @db.VarChar(20)
+  email                   String?       @unique @db.VarChar(255)
+  username                String?       @unique @db.VarChar(30)
+  display_name            String?       @db.VarChar(100)
+  universal_id            String        @unique @db.VarChar(30)
+  universal_id_revoked_at DateTime?     @db.Timestamptz
+  registration_channel    String?       @db.VarChar(10)  // 'phone' | 'email'
+  registration_step       String?       @default("otp_pending") @db.VarChar(30)
+  kyc_tier                Int           @default(0) @db.SmallInt
+  account_status          AccountStatus @default(pending_verification)
+  deleted_at              DateTime?     @db.Timestamptz
+  created_at              DateTime      @default(now()) @db.Timestamptz
+  updated_at              DateTime      @updatedAt @db.Timestamptz
+
+  auth                      UserAuth?
+  wallet                    Wallet?
+  device_sessions           DeviceSession[]
+  kyc_attempts              KycAttempt[]
+  transactions_sent         Transaction[]        @relation("TransactionInitiator")
+  notifications             Notification[]
+  notification_pref         NotificationPref?
+  conversations             Conversation[]
+  disputes                  Dispute[]
+  beneficiaries             Beneficiary[]
+  qr_codes                  QrCode[]
+  payment_requests_sent     PaymentRequest[]     @relation("PaymentRequestSender")
+  payment_requests_received PaymentRequest[]     @relation("PaymentRequestReceiver")
+  audit_logs                AuditLog[]
+  universal_id_history      UniversalIdHistory[]
+
+  @@index([phone])
+  @@index([email])
+  @@index([username])
+  @@index([universal_id])
+  @@index([account_status])
+  @@index([kyc_tier])
+  @@index([deleted_at])
+  @@map("users")
+}
+
+model UserAuth {
+  id                              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                         String    @unique @db.Uuid
+  login_passcode_hash             String?   @db.VarChar(255)  // nullable until step 4 of registration
+  login_passcode_failed_attempts  Int       @default(0) @db.SmallInt
+  login_passcode_locked_until     DateTime? @db.Timestamptz
+  login_passcode_hard_locked      Boolean   @default(false)
+  login_passcode_lockout_count    Int       @default(0) @db.SmallInt
+  transaction_pin_hash            String?   @db.VarChar(255)
+  transaction_pin_failed_attempts Int       @default(0) @db.SmallInt
+  transaction_pin_locked_until    DateTime? @db.Timestamptz
+  transaction_pin_hard_locked     Boolean   @default(false)
+  transaction_pin_lockout_count   Int       @default(0) @db.SmallInt
+  upp_hash                        String?   @db.VarChar(255)  // Universal Payment PIN
+  upp_failed_attempts             Int       @default(0) @db.SmallInt
+  upp_locked_until                DateTime? @db.Timestamptz
+  upp_hard_locked                 Boolean   @default(false)
+  upp_lockout_count               Int       @default(0) @db.SmallInt
+  argon2_params                   String    @db.VarChar(100)
+  created_at                      DateTime  @default(now()) @db.Timestamptz
+  updated_at                      DateTime  @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@map("user_auth")
+}
+
+model Admin {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String    @unique @db.VarChar(255)
+  display_name  String    @db.VarChar(100)
+  role          AdminRole @default(admin)
+  passcode_hash String    @db.VarChar(255)
+  argon2_params String    @db.VarChar(100)
+  mfa_secret    String?   @db.VarChar(255)
+  mfa_enabled   Boolean   @default(false)
+  is_active     Boolean   @default(true)
+  deleted_at    DateTime? @db.Timestamptz
+  created_at    DateTime  @default(now()) @db.Timestamptz
+  updated_at    DateTime  @updatedAt @db.Timestamptz
+
+  device_sessions AdminSession[]
+  admin_actions   AdminAction[]
+  reversals       Reversal[]
+  kyc_overrides   KycAttempt[]   @relation("KycAdminOverride")
+
+  @@index([email])
+  @@index([role])
+  @@index([is_active])
+  @@map("admins")
+}
+
+model AdminSession {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id      String   @db.Uuid
+  refresh_token String   @unique @db.VarChar(512)
+  device_id     String   @db.VarChar(255)
+  ip_address    String   @db.VarChar(45)
+  user_agent    String   @db.VarChar(512)
+  is_revoked    Boolean  @default(false)
+  expires_at    DateTime @db.Timestamptz
+  last_active   DateTime @default(now()) @db.Timestamptz
+  created_at    DateTime @default(now()) @db.Timestamptz
+
+  admin Admin @relation(fields: [admin_id], references: [id])
+
+  @@index([admin_id])
+  @@index([refresh_token])
+  @@index([is_revoked])
+  @@map("admin_sessions")
+}
+
+model Wallet {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @unique @db.Uuid
+  deleted_at DateTime? @db.Timestamptz
+  created_at DateTime  @default(now()) @db.Timestamptz
+  updated_at DateTime  @updatedAt @db.Timestamptz
+
+  user           User          @relation(fields: [user_id], references: [id])
+  ledger_entries LedgerEntry[]
+
+  @@index([user_id])
+  @@map("wallets")
+}
+
+model LedgerEntry {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  wallet_id      String          @db.Uuid
+  transaction_id String          @db.Uuid
+  type           LedgerEntryType
+  amount         BigInt
+  created_at     DateTime        @default(now()) @db.Timestamptz
+
+  wallet      Wallet      @relation(fields: [wallet_id], references: [id])
+  transaction Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([wallet_id])
+  @@index([transaction_id])
+  @@index([wallet_id, type])
+  @@index([created_at])
+  @@map("ledger_entries")
+}
+
+model Transaction {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type               TransactionType
+  status             TransactionStatus @default(pending)
+  amount             BigInt
+  fee                BigInt            @default(0)
+  net_amount         BigInt
+  narration          String?           @db.VarChar(255)
+  reference          String            @unique @db.VarChar(64)
+  idempotency_key    String            @unique @db.Uuid
+  initiator_id       String            @db.Uuid
+  initiator_type     InitiatorType
+  sender_wallet_id   String?           @db.Uuid
+  receiver_wallet_id String?           @db.Uuid
+  metadata           Json?
+  completed_at       DateTime?         @db.Timestamptz
+  deleted_at         DateTime?         @db.Timestamptz
+  created_at         DateTime          @default(now()) @db.Timestamptz
+  updated_at         DateTime          @updatedAt @db.Timestamptz
+
+  ledger_entries   LedgerEntry[]
+  transaction_fees TransactionFee[]
+  receipt          Receipt?
+  dispute          Dispute?
+  reversal_source  Reversal?        @relation("ReversalSource")
+  reversal_record  Reversal?        @relation("ReversalTransaction")
+  idempotency      IdempotencyKey?
+  initiator        User?            @relation("TransactionInitiator", fields: [initiator_id], references: [id], map: "transactions_initiator_user_fk")
+
+  @@index([reference])
+  @@index([idempotency_key])
+  @@index([status])
+  @@index([type])
+  @@index([initiator_id])
+  @@index([sender_wallet_id])
+  @@index([receiver_wallet_id])
+  @@index([created_at])
+  @@index([status, created_at])
+  @@map("transactions")
+}
+
+model TransactionFee {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id String      @db.Uuid
+  description    String      @db.VarChar(100)
+  amount         BigInt
+  created_at     DateTime    @default(now()) @db.Timestamptz
+
+  transaction Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([transaction_id])
+  @@map("transaction_fees")
+}
+
+model IdempotencyKey {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key               String      @unique @db.Uuid
+  user_id           String      @db.Uuid
+  request_hash      String      @db.VarChar(64)
+  response_snapshot Json
+  status            String      @db.VarChar(20)
+  transaction_id    String?     @unique @db.Uuid
+  expires_at        DateTime    @db.Timestamptz
+  created_at        DateTime    @default(now()) @db.Timestamptz
+
+  transaction Transaction? @relation(fields: [transaction_id], references: [id])
+
+  @@index([key])
+  @@index([user_id])
+  @@index([expires_at])
+  @@map("idempotency_keys")
+}
+
+model Receipt {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id        String    @unique @db.Uuid
+  public_token          String    @unique @db.Uuid
+  signed_url            String?   @db.VarChar(2048)
+  signed_url_expires_at DateTime? @db.Timestamptz
+  pdf_generated         Boolean   @default(false)
+  created_at            DateTime  @default(now()) @db.Timestamptz
+  updated_at            DateTime  @updatedAt @db.Timestamptz
+
+  transaction Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([transaction_id])
+  @@index([public_token])
+  @@map("receipts")
+}
+
+model DeviceSession {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String   @db.Uuid
+  device_id     String   @db.VarChar(255)
+  refresh_token String   @unique @db.VarChar(512)
+  ip_address    String   @db.VarChar(45)
+  user_agent    String   @db.VarChar(512)
+  is_revoked    Boolean   @default(false)
+  fcm_token     String?   @db.VarChar(512)
+  expires_at    DateTime  @db.Timestamptz
+  last_active   DateTime  @default(now()) @db.Timestamptz
+  created_at    DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([device_id])
+  @@index([refresh_token])
+  @@index([user_id, device_id])
+  @@index([is_revoked])
+  @@index([expires_at])
+  @@map("device_sessions")
+}
+
+model KycAttempt {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String    @db.Uuid
+  tier_target      Int       @db.SmallInt
+  status           KycStatus @default(pending)
+  failure_reason   String?   @db.VarChar(255)
+  metadata         Json?
+  cooldown_until   DateTime? @db.Timestamptz
+  is_admin_override Boolean  @default(false)
+  overridden_by    String?   @db.Uuid
+  created_at       DateTime  @default(now()) @db.Timestamptz
+  updated_at       DateTime  @updatedAt @db.Timestamptz
+
+  user  User   @relation(fields: [user_id], references: [id])
+  admin Admin? @relation("KycAdminOverride", fields: [overridden_by], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([user_id, tier_target])
+  @@index([created_at])
+  @@map("kyc_attempts")
+}
+
+model Beneficiary {
+  id                  String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String          @db.Uuid
+  type                BeneficiaryType
+  recipient_user_id   String?         @db.Uuid
+  recipient_name      String?         @db.VarChar(100)
+  bank_code           String?         @db.VarChar(10)
+  bank_name           String?         @db.VarChar(100)
+  account_number      String?         @db.VarChar(512)
+  account_name        String?         @db.VarChar(100)
+  account_verified    Boolean         @default(false)
+  account_verified_at DateTime?       @db.Timestamptz
+  nickname            String?         @db.VarChar(50)
+  deleted_at          DateTime?       @db.Timestamptz
+  created_at          DateTime        @default(now()) @db.Timestamptz
+  updated_at          DateTime        @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([user_id, type])
+  @@index([deleted_at])
+  @@map("beneficiaries")
+}
+
+model PaymentRequest {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sender_id   String    @db.Uuid
+  receiver_id String    @db.Uuid
+  amount      BigInt
+  narration   String?   @db.VarChar(255)
+  status      String    @db.VarChar(20)
+  expires_at  DateTime  @db.Timestamptz
+  paid_at     DateTime? @db.Timestamptz
+  deleted_at  DateTime? @db.Timestamptz
+  created_at  DateTime  @default(now()) @db.Timestamptz
+  updated_at  DateTime  @updatedAt @db.Timestamptz
+
+  sender   User @relation("PaymentRequestSender", fields: [sender_id], references: [id])
+  receiver User @relation("PaymentRequestReceiver", fields: [receiver_id], references: [id])
+
+  @@index([sender_id])
+  @@index([receiver_id])
+  @@index([status])
+  @@index([expires_at])
+  @@map("payment_requests")
+}
+
+model Notification {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String              @db.Uuid
+  channel        NotificationChannel
+  status         NotificationStatus  @default(pending)
+  event_type     String              @db.VarChar(50)
+  title          String              @db.VarChar(255)
+  body           String              @db.Text
+  metadata       Json?
+  attempts       Int                 @default(0) @db.SmallInt
+  last_attempted DateTime?           @db.Timestamptz
+  delivered_at   DateTime?           @db.Timestamptz
+  created_at     DateTime            @default(now()) @db.Timestamptz
+  updated_at     DateTime            @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([channel])
+  @@index([event_type])
+  @@index([created_at])
+  @@map("notifications")
+}
+
+model NotificationPref {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String   @unique @db.Uuid
+  push_transactions    Boolean  @default(true)
+  email_transactions   Boolean  @default(true)
+  sms_transactions     Boolean  @default(false)
+  push_marketing       Boolean  @default(false)
+  email_marketing      Boolean  @default(false)
+  push_security        Boolean  @default(true)
+  email_security       Boolean  @default(true)
+  created_at           DateTime @default(now()) @db.Timestamptz
+  updated_at           DateTime @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@map("notification_prefs")
+}
+
+model Conversation {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String           @db.Uuid
+  status       BotSessionStatus @default(active)
+  state        BotState         @default(idle)
+  intent_count Int              @default(0) @db.SmallInt
+  messages     Json             @default("[]")
+  context      Json?
+  expires_at   DateTime         @db.Timestamptz
+  ended_at     DateTime?        @db.Timestamptz
+  created_at   DateTime         @default(now()) @db.Timestamptz
+  updated_at   DateTime         @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([expires_at])
+  @@map("conversations")
+}
+
+model Webhook {
+  id                String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider          String                  @db.VarChar(50)
+  webhook_id        String                  @db.VarChar(255)
+  event_type        String                  @db.VarChar(100)
+  hmac_verified     Boolean
+  processing_status WebhookProcessingStatus @default(queued)
+  payload_hash      String                  @db.VarChar(64)
+  error_message     String?                 @db.Text
+  created_at        DateTime                @default(now()) @db.Timestamptz
+  updated_at        DateTime                @updatedAt @db.Timestamptz
+
+  @@unique([provider, webhook_id])
+  @@index([provider])
+  @@index([processing_status])
+  @@index([created_at])
+  @@map("webhooks")
+}
+
+model Dispute {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String        @db.Uuid
+  transaction_id  String        @unique @db.Uuid
+  status          DisputeStatus @default(open)
+  reason_category String        @db.VarChar(50)
+  description     String        @db.Text
+  resolution_note String?       @db.Text
+  resolved_by     String?       @db.Uuid
+  resolved_at     DateTime?     @db.Timestamptz
+  deleted_at      DateTime?     @db.Timestamptz
+  created_at      DateTime      @default(now()) @db.Timestamptz
+  updated_at      DateTime      @updatedAt @db.Timestamptz
+
+  user        User        @relation(fields: [user_id], references: [id])
+  transaction Transaction @relation(fields: [transaction_id], references: [id])
+
+  @@index([user_id])
+  @@index([transaction_id])
+  @@index([status])
+  @@index([created_at])
+  @@map("disputes")
+}
+
+model Reversal {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  original_transaction_id String   @unique @db.Uuid
+  reversal_transaction_id String   @unique @db.Uuid
+  admin_id                String   @db.Uuid
+  reason_code             String   @db.VarChar(50)
+  note                    String   @db.Text
+  created_at              DateTime @default(now()) @db.Timestamptz
+
+  original_transaction Transaction @relation("ReversalSource", fields: [original_transaction_id], references: [id])
+  reversal_transaction Transaction @relation("ReversalTransaction", fields: [reversal_transaction_id], references: [id])
+  admin                Admin       @relation(fields: [admin_id], references: [id])
+
+  @@index([original_transaction_id])
+  @@index([admin_id])
+  @@map("reversals")
+}
+
+model AdminAction {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id    String   @db.Uuid
+  action      String   @db.VarChar(100)
+  target_type String   @db.VarChar(50)
+  target_id   String   @db.Uuid
+  reason      String?  @db.Text
+  metadata    Json?
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  admin Admin @relation(fields: [admin_id], references: [id])
+
+  @@index([admin_id])
+  @@index([action])
+  @@index([target_id])
+  @@index([created_at])
+  @@map("admin_actions")
+}
+
+model QrCode {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String     @db.Uuid
+  type       QrCodeType
+  amount     BigInt?
+  narration  String?    @db.VarChar(255)
+  payload    String     @db.Text
+  hmac_sig   String     @db.VarChar(128)
+  expires_at DateTime?  @db.Timestamptz
+  is_active  Boolean    @default(true)
+  created_at DateTime   @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([is_active])
+  @@index([expires_at])
+  @@map("qr_codes")
+}
+
+model UniversalIdHistory {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String   @db.Uuid
+  universal_id   String   @unique @db.VarChar(20)
+  revoked_at     DateTime @default(now()) @db.Timestamptz
+  revoked_reason String   @default("user_requested") @db.VarChar(50)
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([universal_id])
+  @@map("universal_id_history")
+}
+
+model AuditLog {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actor_id      String?   @db.Uuid
+  actor_type    String    @db.VarChar(20)
+  action        String    @db.VarChar(100)
+  target_type   String?   @db.VarChar(50)
+  target_id     String?   @db.Uuid
+  metadata      Json?
+  ip_address    String?   @db.VarChar(45)
+  previous_hash String    @db.VarChar(64)
+  created_at    DateTime  @default(now()) @db.Timestamptz
+
+  user User? @relation(fields: [actor_id], references: [id], map: "audit_logs_user_fk")
+
+  @@index([actor_id])
+  @@index([action])
+  @@index([target_id])
+  @@index([created_at])
+  @@map("audit_logs")
+}

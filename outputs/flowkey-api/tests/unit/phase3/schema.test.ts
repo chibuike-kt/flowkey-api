@@ -1,8 +1,6 @@
 /**
  * Phase 3 — Schema unit tests
- *
- * Reads ALL migration files combined so tests pass regardless of
- * whether Prisma generated a new migration or our hand-crafted one is present.
+ * Updated to find migration dynamically (DB was reset and remigrated).
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -10,41 +8,28 @@ import * as path from 'path';
 const migrationsDir = path.resolve(__dirname, '../../../prisma/migrations');
 const schemaPath = path.resolve(__dirname, '../../../prisma/schema.prisma');
 
-// Read ALL migration SQL files combined into one string
-function readAllMigrations(): string {
-  if (!fs.existsSync(migrationsDir)) return '';
-  const dirs = fs
-    .readdirSync(migrationsDir)
-    .filter((d) => fs.statSync(path.join(migrationsDir, d)).isDirectory())
-    .sort();
-
-  return dirs
-    .map((dir) => {
-      const sqlPath = path.join(migrationsDir, dir, 'migration.sql');
-      return fs.existsSync(sqlPath) ? fs.readFileSync(sqlPath, 'utf8') : '';
-    })
-    .join('\n');
-}
-
-// Find migration containing ledger_entries + audit_logs (the initial schema)
+// Find the initial schema migration — it's the one with the most tables
 function findInitialMigration(): string | null {
   if (!fs.existsSync(migrationsDir)) return null;
   const dirs = fs
     .readdirSync(migrationsDir)
     .filter((d) => fs.statSync(path.join(migrationsDir, d)).isDirectory())
     .sort();
+
   for (const dir of dirs) {
     const sqlPath = path.join(migrationsDir, dir, 'migration.sql');
     if (fs.existsSync(sqlPath)) {
       const content = fs.readFileSync(sqlPath, 'utf8');
-      if (content.includes('ledger_entries') && content.includes('audit_logs')) return sqlPath;
+      // The initial migration creates ledger_entries and audit_logs
+      if (content.includes('ledger_entries') && content.includes('audit_logs')) {
+        return sqlPath;
+      }
     }
   }
   return null;
 }
 
-const allSql = readAllMigrations();
-const initialMigrationFile = findInitialMigration();
+const migrationFile = findInitialMigration();
 
 describe('Migration file', () => {
   it('at least one migration file exists', () => {
@@ -56,30 +41,31 @@ describe('Migration file', () => {
   });
 
   it('initial schema migration.sql exists', () => {
-    expect(initialMigrationFile).not.toBeNull();
-    expect(fs.existsSync(initialMigrationFile!)).toBe(true);
+    expect(migrationFile).not.toBeNull();
+    expect(fs.existsSync(migrationFile!)).toBe(true);
   });
 
-  // Immutability triggers — in our hand-crafted file
   it('enforces append-only ledger_entries', () => {
-    expect(allSql).toContain('enforce_ledger_immutability');
-    expect(allSql).toContain('ledger_entries_immutability_guard');
-    expect(allSql).toContain('BEFORE UPDATE OR DELETE ON "ledger_entries"');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('enforce_ledger_immutability');
+    expect(sql).toContain('ledger_entries_immutability_guard');
+    expect(sql).toContain('BEFORE UPDATE OR DELETE ON "ledger_entries"');
   });
 
   it('enforces append-only audit_logs', () => {
-    expect(allSql).toContain('enforce_audit_log_immutability');
-    expect(allSql).toContain('audit_logs_immutability_guard');
-    expect(allSql).toContain('BEFORE UPDATE OR DELETE ON "audit_logs"');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('enforce_audit_log_immutability');
+    expect(sql).toContain('audit_logs_immutability_guard');
+    expect(sql).toContain('BEFORE UPDATE OR DELETE ON "audit_logs"');
   });
 
   it('contains audit chain verification function', () => {
-    expect(allSql).toContain('verify_audit_log_chain');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('verify_audit_log_chain');
   });
 
   it('does NOT use floating point types for money', () => {
-    // Check the initial migration specifically
-    const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
     expect(sql).not.toMatch(/"\w+"\s+FLOAT/);
     expect(sql).not.toMatch(/"\w+"\s+DECIMAL/);
     expect(sql).not.toMatch(/"\w+"\s+NUMERIC/);
@@ -87,32 +73,35 @@ describe('Migration file', () => {
   });
 
   it('uses TIMESTAMPTZ (no naive TIMESTAMP)', () => {
-    const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
     const stripped = sql.replace(/TIMESTAMPTZ/g, '');
     expect(stripped).not.toMatch(/\bTIMESTAMP\b/);
   });
 
   it('uses gen_random_uuid() for primary keys', () => {
-    const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
     const tableCount = (sql.match(/CREATE TABLE/g) ?? []).length;
     const uuidCount = (sql.match(/DEFAULT gen_random_uuid\(\)/g) ?? []).length;
     expect(uuidCount).toBeGreaterThanOrEqual(tableCount);
   });
 
-  // Check constraints — in our hand-crafted file
   it('enforces positive amount constraint', () => {
-    expect(allSql).toContain('"amount" > 0');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('"amount" > 0');
   });
 
   it('enforces non-negative fee constraint', () => {
-    expect(allSql).toContain('"fee" >= 0');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('"fee" >= 0');
   });
 
   it('enforces kyc_tier bounds', () => {
-    expect(allSql).toContain('"kyc_tier" >= 0 AND "kyc_tier" <= 3');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('"kyc_tier" >= 0 AND "kyc_tier" <= 3');
   });
 
   it('includes all required tables', () => {
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
     const required = [
       'users',
       'user_auth',
@@ -139,19 +128,20 @@ describe('Migration file', () => {
       'audit_logs',
     ];
     for (const table of required) {
-      expect(allSql).toContain(`CREATE TABLE "${table}"`);
+      expect(sql).toContain(`CREATE TABLE "${table}"`);
     }
   });
 
   it('wallets table has no balance column', () => {
-    const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
     const match = sql.match(/CREATE TABLE "wallets" \([\s\S]*?\);/);
     expect(match).not.toBeNull();
     expect(match![0]).not.toContain('balance');
   });
 
   it('includes rollback strategy documentation', () => {
-    expect(allSql).toContain('ROLLBACK STRATEGY');
+    const sql = fs.readFileSync(migrationFile!, 'utf8');
+    expect(sql).toContain('ROLLBACK STRATEGY');
   });
 });
 
@@ -161,18 +151,22 @@ describe('Prisma schema file', () => {
   });
 
   it('uses postgresql provider', () => {
-    expect(fs.readFileSync(schemaPath, 'utf8')).toContain('"postgresql"');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+    expect(schema).toContain('"postgresql"');
   });
 
   it('uses DATABASE_URL env var', () => {
-    expect(fs.readFileSync(schemaPath, 'utf8')).toContain('env("DATABASE_URL")');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+    expect(schema).toContain('env("DATABASE_URL")');
   });
 
   it('uses SHADOW_DATABASE_URL for migrate dev', () => {
-    expect(fs.readFileSync(schemaPath, 'utf8')).toContain('env("SHADOW_DATABASE_URL")');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+    expect(schema).toContain('env("SHADOW_DATABASE_URL")');
   });
 
   it('prisma.config.ts does NOT exist — not a Prisma 6 concept', () => {
-    expect(fs.existsSync(path.resolve(__dirname, '../../../prisma.config.ts'))).toBe(false);
+    const configPath = path.resolve(__dirname, '../../../prisma.config.ts');
+    expect(fs.existsSync(configPath)).toBe(false);
   });
 });

@@ -1,0 +1,145 @@
+{
+  "info": {
+    "name": "FlowKey API — Auth",
+    "description": "Complete auth flow for FlowKey.\n\nBase URL: http://localhost:3000/api/v1\n\nFlow:\n1. Initiate Registration\n2. Verify OTP\n3. Check Username\n4. Complete Registration\n5. Login",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000/api/v1" },
+    { "key": "registration_id", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "refresh_token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Registration",
+      "item": [
+        {
+          "name": "Initiate Registration (Phone)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contact\": \"+2348012345678\",\n  \"contact_type\": \"phone\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/initiate",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "initiate"]
+            }
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registration_id\": \"{{registration_id}}\",\n  \"otp\": \"123456\",\n  \"contact_type\": \"phone\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/verify-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "verify-otp"]
+            }
+          }
+        },
+        {
+          "name": "Check Username",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/auth/check-username?username=kingsley_kt",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "check-username"],
+              "query": [
+                { "key": "username", "value": "kingsley_kt" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Complete Registration",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registration_id\": \"{{registration_id}}\",\n  \"username\": \"kingsley_kt\",\n  \"login_passcode\": \"123456\",\n  \"device_id\": \"postman-device-001\",\n  \"fcm_token\": \"postman-fcm-token\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/complete",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "complete"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contact\": \"+2348012345678\",\n  \"contact_type\": \"phone\",\n  \"login_passcode\": \"123456\",\n  \"device_id\": \"postman-device-001\",\n  \"fcm_token\": \"postman-fcm-token\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "http://localhost:3000/health",
+              "host": ["http://localhost:3000"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -2,8 +2,6 @@
  * Phase 5 — Auth integration tests
  * Requires: Docker Compose up + migrations applied
  * Run: npm run test:integration
- *
- * Uses require() — CJS Jest does not support dynamic import() in beforeAll.
  */
 
 import supertest from 'supertest';
@@ -15,13 +13,10 @@ let app: Application;
 
 beforeAll(async () => {
   jest.resetModules();
-  // Must use require() not import() — Jest CJS mode doesn't support
-  // dynamic import callbacks without --experimental-vm-modules
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const cfg = require('../../../src/config') as typeof import('../../../src/config');
-  cfg._resetConfigForTesting();
-  await cfg.initConfig();
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { _resetConfigForTesting, initConfig } =
+    require('../../../src/config') as typeof import('../../../src/config');
+  _resetConfigForTesting();
+  await initConfig();
   const { createApp } = require('../../../src/app') as typeof import('../../../src/app');
   app = createApp();
 }, 30000);
@@ -213,10 +208,10 @@ describe('POST /api/v1/auth/logout', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Response envelope shape
+// Standard envelope shape
 // ---------------------------------------------------------------------------
 describe('Response envelope', () => {
-  it('error responses have correct shape', async () => {
+  it('error response always has correct shape', async () => {
     const res = await supertest(app)
       .post('/api/v1/auth/login')
       .set('Idempotency-Key', uuid())
@@ -246,7 +241,7 @@ describe('Response envelope', () => {
 // Settings — passcode/forgot
 // ---------------------------------------------------------------------------
 describe('POST /api/v1/settings/passcode/forgot', () => {
-  it('returns 404 or 200 for unregistered phone', async () => {
+  it('returns 404 for unregistered phone', async () => {
     const res = await supertest(app)
       .post('/api/v1/settings/passcode/forgot')
       .set('Idempotency-Key', uuid())

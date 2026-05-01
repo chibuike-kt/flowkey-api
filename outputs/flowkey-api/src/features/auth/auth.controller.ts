@@ -231,7 +231,7 @@ export async function logoutAll(req: Request, res: Response, next: NextFunction)
 export async function getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = (await import('../../common/utils/prisma.js')).prisma as any;
+    const db = (await import('../../common/utils/prisma')).prisma as any;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const user = await db.user.findUniqueOrThrow({
       where: { id: req.user!.sub },
@@ -426,7 +426,7 @@ export async function revokeUniversalId(
 export async function listSessions(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = (await import('../../common/utils/prisma.js')).prisma as any;
+    const db = (await import('../../common/utils/prisma')).prisma as any;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const sessions = await db.deviceSession.findMany({
       where: { user_id: req.user!.sub, is_revoked: false },
