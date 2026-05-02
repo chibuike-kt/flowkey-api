@@ -51,8 +51,12 @@ async function boot(): Promise<void> {
     socket.destroy();
   });
 
-  socket.on('error', (err: Error) => {
-    console.error('SMTP ERROR:', err.message);
+  socket.on('error', (err: unknown) => {
+    console.error('SMTP ERROR RAW:', err);
+    console.error('SMTP ERROR STRING:', String(err));
+    process.on('uncaughtException', (err) => {
+      console.error('UNCAUGHT:', err);
+    });
   });
 
   const cfg = config();
