@@ -29,12 +29,32 @@ import { createApp } from './app';
 import { logger } from './common/utils/logger';
 import { prisma } from './common/utils/prisma';
 import { redis } from './common/utils/redis';
+import * as net from 'net';
 
 // -----------------------------------------------------------------------------
 // BOOT FUNCTION
 // -----------------------------------------------------------------------------
 async function boot(): Promise<void> {
   await initConfig();
+  // TEMP SMTP DEBUG TEST
+  const socket = net.createConnection(465, 'smtp.gmail.com');
+
+  socket.setTimeout(10000);
+
+  socket.on('connect', () => {
+    console.log('SMTP CONNECTED');
+    socket.end();
+  });
+
+  socket.on('timeout', () => {
+    console.error('SMTP TIMEOUT');
+    socket.destroy();
+  });
+
+  socket.on('error', (err: Error) => {
+    console.error('SMTP ERROR:', err.message);
+  });
+
   const cfg = config();
 
   logger.info('FlowKey API starting', {

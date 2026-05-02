@@ -143,3 +143,10 @@
     }
   ]
 }
+
+
+{
+  "registration_id": "",
+  "otp": "",
+  "contact_type": "email"
+}
