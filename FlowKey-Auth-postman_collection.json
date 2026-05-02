@@ -1,11 +1,11 @@
 {
   "info": {
     "name": "FlowKey API — Auth",
-    "description": "Complete auth flow for FlowKey.\n\nBase URL: http://localhost:3000/api/v1\n\nFlow:\n1. Initiate Registration\n2. Verify OTP\n3. Check Username\n4. Complete Registration\n5. Login",
+    "description": "Complete auth flow for FlowKey.\n\nBase URL: https://flowkey-api.onrender.com/api/v1\n\nFlow:\n1. Initiate Registration\n2. Verify OTP\n3. Check Username\n4. Complete Registration\n5. Login",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:3000/api/v1" },
+    { "key": "baseUrl", "value": "https://flowkey-api.onrender.com/api/v1" },
     { "key": "registration_id", "value": "" },
     { "key": "access_token", "value": "" },
     { "key": "refresh_token", "value": "" }
@@ -133,8 +133,8 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "http://localhost:3000/health",
-              "host": ["http://localhost:3000"],
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
               "path": ["health"]
             }
           }

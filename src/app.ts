@@ -14,6 +14,8 @@ import morgan from 'morgan';
 import { config } from './config';
 import { errorHandler } from './common/middleware/errorHandler';
 import { notFoundHandler } from './common/middleware/notFound';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './docs/swagger';
 
 // Phase 5 — Auth & Settings routers (active)
 import { authRouter } from './features/auth/auth.router';
@@ -38,53 +40,53 @@ export function createApp(): express.Application {
   const cfg = config();
 
   // -------------------------------------------------------------------------
-  // Security headers — Helmet configured for API (not browser HTML)
-  // CSP is intentionally omitted — client is React Native, not a browser
+  // Security headers
   // -------------------------------------------------------------------------
   app.use(
     helmet({
-      contentSecurityPolicy: false, // not applicable to a JSON API
+      contentSecurityPolicy: false,
       crossOriginEmbedderPolicy: false,
       crossOriginOpenerPolicy: false,
       crossOriginResourcePolicy: false,
     }),
   );
 
-  // Remove X-Powered-By (helmet does this by default, but explicit is better)
   app.disable('x-powered-by');
 
   // -------------------------------------------------------------------------
-  // CORS — whitelist only
-  // Mobile app doesn't send an Origin header in most cases, but the admin
-  // web tool will. Configure the whitelist when the admin tool origin is known.
+  // CORS
   // -------------------------------------------------------------------------
   app.use(
     cors({
       origin: cfg.isProduction
         ? (process.env['ALLOWED_ORIGINS'] ?? '').split(',').filter(Boolean)
-        : true, // allow all in dev
+        : true,
       methods: ['GET', 'POST', 'PATCH', 'DELETE'],
       allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
-      credentials: false, // no cookies — Bearer token auth only
+      credentials: false,
     }),
   );
 
   // -------------------------------------------------------------------------
-  // Body parsing — JSON only. No form submissions, no multipart.
+  // Body parsing
   // -------------------------------------------------------------------------
   app.use(express.json({ limit: '1mb' }));
 
   // -------------------------------------------------------------------------
-  // HTTP request logging — Morgan
-  // In production: combined format → CloudWatch
-  // In development: dev format → terminal
+  // Logging
   // -------------------------------------------------------------------------
   if (!cfg.isTest) {
     app.use(morgan(cfg.isProduction ? 'combined' : 'dev'));
   }
 
   // -------------------------------------------------------------------------
-  // Health check — unauthenticated, no rate limit, used by load balancer
+  // Swagger / OpenAPI
+  // -------------------------------------------------------------------------
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+
+  // -------------------------------------------------------------------------
+  // Health check
   // -------------------------------------------------------------------------
   app.get('/health', (_req, res) => {
     res.status(200).json({
@@ -96,33 +98,38 @@ export function createApp(): express.Application {
   });
 
   // -------------------------------------------------------------------------
-  // API routes — versioned at /api/v1
+  // API routes
   // -------------------------------------------------------------------------
   const apiPrefix = `/api/${cfg.apiVersion}`;
 
-  // Phase 5 — Active routes
   app.use(`${apiPrefix}/auth`, authRouter);
   app.use(`${apiPrefix}/settings`, settingsRouter);
 
-  // Routes are mounted as each phase is completed.
-  // The pattern for every future feature:
-  //   app.use(`${apiPrefix}/kyc`, kycRouter);
-  //   app.use(`${apiPrefix}/wallet`, walletRouter);
-  //   etc.
+  // Future modules
+  // app.use(`${apiPrefix}/kyc`, kycRouter);
+  // app.use(`${apiPrefix}/wallet`, walletRouter);
+  // app.use(`${apiPrefix}/transfers`, transferRouter);
+  // app.use(`${apiPrefix}/withdrawals`, withdrawalRouter);
+  // app.use(`${apiPrefix}/bills`, billRouter);
+  // app.use(`${apiPrefix}/qr`, qrRouter);
+  // app.use(`${apiPrefix}/bot`, botRouter);
+  // app.use(`${apiPrefix}/notifications`, notificationRouter);
+  // app.use(`${apiPrefix}/receipts`, receiptRouter);
+  // app.use(`${apiPrefix}/disputes`, disputeRouter);
+  // app.use(`${apiPrefix}/admin`, adminRouter);
 
   // -------------------------------------------------------------------------
-  // Webhook routes — separate router, HMAC middleware applied at router level
-  // Webhooks are on /webhooks/v1, NOT under /api/v1
+  // Webhooks (separate from API)
   // -------------------------------------------------------------------------
   // app.use('/webhooks/v1', webhookRouter);
 
   // -------------------------------------------------------------------------
-  // 404 handler — must come AFTER all valid routes
+  // 404 handler
   // -------------------------------------------------------------------------
   app.use(notFoundHandler);
 
   // -------------------------------------------------------------------------
-  // Global error handler — must be LAST, after all routes and 404
+  // Global error handler
   // -------------------------------------------------------------------------
   app.use(errorHandler);
 

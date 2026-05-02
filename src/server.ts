@@ -2,33 +2,38 @@
  * FlowKey — Server Entry Point
  *
  * Boot sequence:
- *   1. Load dotenv (development/test only — production resolves from AWS)
- *   2. Initialise config (resolves AWS Secrets Manager in production)
- *   3. Validate database connectivity
- *   4. Validate Redis connectivity
- *   5. Create Express app
- *   6. Start HTTP server
- *
- * Anything that fails in steps 1–5 is a hard startup failure.
- * The process exits with code 1 and logs the reason.
+ *  1. Load environment (dev/test only)
+ *  2. Initialise config (AWS secrets in prod)
+ *  3. Validate DB
+ *  4. Validate Redis
+ *  5. Create Express app
+ *  6. Start server
  */
 
-// Load environment variables FIRST — before any other imports that might
-// access process.env. dotenv.config() is a no-op if NODE_ENV=production
-// (AWS Secrets Manager handles secrets in production).
 import * as dotenv from 'dotenv';
-if (process.env['NODE_ENV'] !== 'production') {
+
+// -----------------------------------------------------------------------------
+// 1. ENV LOADING (safe + explicit)
+// -----------------------------------------------------------------------------
+const isProd = process.env.NODE_ENV === 'production';
+
+if (!isProd) {
   dotenv.config();
 }
 
+// -----------------------------------------------------------------------------
+// 2. CORE IMPORTS
+// -----------------------------------------------------------------------------
 import { initConfig, config } from './config';
 import { createApp } from './app';
 import { logger } from './common/utils/logger';
 import { prisma } from './common/utils/prisma';
 import { redis } from './common/utils/redis';
 
+// -----------------------------------------------------------------------------
+// BOOT FUNCTION
+// -----------------------------------------------------------------------------
 async function boot(): Promise<void> {
-  // Step 1: Initialise config (resolves secrets from AWS in production)
   await initConfig();
   const cfg = config();
 
@@ -38,7 +43,9 @@ async function boot(): Promise<void> {
     apiVersion: cfg.apiVersion,
   });
 
-  // Step 2: Validate database connectivity
+  // ---------------------------------------------------------------------------
+  // 1. DATABASE CHECK
+  // ---------------------------------------------------------------------------
   try {
     await prisma.$queryRaw`SELECT 1`;
     logger.info('Database connection: OK');
@@ -49,10 +56,16 @@ async function boot(): Promise<void> {
     process.exit(1);
   }
 
-  // Step 3: Validate Redis connectivity
+  // ---------------------------------------------------------------------------
+  // 2. REDIS CHECK
+  // ---------------------------------------------------------------------------
   try {
     const pong = await redis.ping();
-    if (pong !== 'PONG') throw new Error('Unexpected PING response');
+
+    if (pong !== 'PONG') {
+      throw new Error(`Unexpected Redis response: ${pong}`);
+    }
+
     logger.info('Redis connection: OK');
   } catch (err) {
     logger.error('Redis connection failed — aborting startup', {
@@ -61,19 +74,26 @@ async function boot(): Promise<void> {
     process.exit(1);
   }
 
-  // Step 4: Create Express app
+  // ---------------------------------------------------------------------------
+  // 3. EXPRESS APP
+  // ---------------------------------------------------------------------------
   const app = createApp();
 
-  // Step 5: Start HTTP server
+  // ---------------------------------------------------------------------------
+  // 4. START SERVER
+  // ---------------------------------------------------------------------------
   const server = app.listen(cfg.port, () => {
-    logger.info(`FlowKey API listening on port ${cfg.port}`);
+    logger.info('FlowKey API running', {
+      port: cfg.port,
+      environment: cfg.nodeEnv,
+    });
   });
 
-  // -------------------------------------------------------------------------
-  // Graceful shutdown
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // GRACEFUL SHUTDOWN
+  // ---------------------------------------------------------------------------
   const shutdown = async (signal: string): Promise<void> => {
-    logger.warn(`Received ${signal} — starting graceful shutdown`);
+    logger.warn(`Received ${signal} — shutting down gracefully`);
 
     server.close(async () => {
       logger.info('HTTP server closed');
@@ -82,7 +102,7 @@ async function boot(): Promise<void> {
         await prisma.$disconnect();
         logger.info('Database disconnected');
       } catch (err) {
-        logger.error('Error disconnecting database', {
+        logger.error('DB disconnect error', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -91,18 +111,18 @@ async function boot(): Promise<void> {
         await redis.quit();
         logger.info('Redis disconnected');
       } catch (err) {
-        logger.error('Error disconnecting Redis', {
+        logger.error('Redis disconnect error', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
 
-      logger.info('Graceful shutdown complete');
+      logger.info('Shutdown complete');
       process.exit(0);
     });
 
-    // Force-kill after 15 seconds if graceful shutdown hangs
+    // force exit fallback
     setTimeout(() => {
-      logger.error('Graceful shutdown timed out — force exiting');
+      logger.error('Forced shutdown after timeout');
       process.exit(1);
     }, 15000);
   };
@@ -110,21 +130,27 @@ async function boot(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  // Catch unhandled rejections — log and exit
+  // ---------------------------------------------------------------------------
+  // GLOBAL ERROR HANDLERS
+  // ---------------------------------------------------------------------------
   process.on('unhandledRejection', (reason) => {
-    logger.error('Unhandled promise rejection — exiting', {
+    logger.error('Unhandled promise rejection', {
       reason: reason instanceof Error ? reason.message : String(reason),
     });
     process.exit(1);
   });
 
-  // Catch uncaught exceptions — log and exit
   process.on('uncaughtException', (err) => {
-    logger.error('Uncaught exception — exiting', { error: err.message });
+    logger.error('Uncaught exception', {
+      error: err.message,
+    });
     process.exit(1);
   });
 }
 
+// -----------------------------------------------------------------------------
+// BOOT EXECUTION
+// -----------------------------------------------------------------------------
 boot().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
