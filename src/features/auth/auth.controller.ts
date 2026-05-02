@@ -1,8 +1,3 @@
-/**
- * FlowKey — Auth Controller
- * HTTP layer only. No business logic here.
- */
-
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -37,9 +32,7 @@ function ua(req: Request): string {
   return req.headers['user-agent'] ?? 'unknown';
 }
 
-// ---------------------------------------------------------------------------
 // Step 1 — Initiate registration
-// ---------------------------------------------------------------------------
 export async function initiateRegistration(
   req: Request,
   res: Response,
@@ -56,18 +49,7 @@ export async function initiateRegistration(
         otp_expires_at: result.otp_expires_at,
         message: `A verification code has been sent to your ${body.contact_type}.`,
         ...(cfg.isDevelopment
-          ? { _dev_note: 'Check server logs for OTP in development mode.' }
-          : {}),
-      }),
-    );
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step 2 — Verify OTP
-// ---------------------------------------------------------------------------
+          ? { _dev_note: 'Check server logs for OTP in d
 export async function verifyRegistrationOtp(
   req: Request,
   res: Response,
@@ -75,7 +57,7 @@ export async function verifyRegistrationOtp(
 ): Promise<void> {
   try {
     const body = VerifyOtpSchema.parse(req.body);
-    // contact_type comes from the body — client knows what channel they used
+
     const contactType = (req.body as { contact_type?: string }).contact_type as
       | 'phone'
       | 'email'
@@ -95,9 +77,7 @@ export async function verifyRegistrationOtp(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Step 2b — Resend OTP
-// ---------------------------------------------------------------------------
 export async function resendRegistrationOtp(
   req: Request,
   res: Response,
@@ -125,9 +105,7 @@ export async function resendRegistrationOtp(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Step 3 — Check username availability
-// ---------------------------------------------------------------------------
 export async function checkUsername(
   req: Request,
   res: Response,
@@ -148,9 +126,8 @@ export async function checkUsername(
   }
 }
 
-// ---------------------------------------------------------------------------
+
 // Step 4 — Complete registration
-// ---------------------------------------------------------------------------
 export async function completeRegistration(
   req: Request,
   res: Response,
@@ -173,9 +150,8 @@ export async function completeRegistration(
   }
 }
 
-// ---------------------------------------------------------------------------
+
 // Login / Logout / Refresh / Me
-// ---------------------------------------------------------------------------
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = LoginSchema.parse(req.body);

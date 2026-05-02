@@ -1,19 +1,6 @@
-/**
- * FlowKey — Config Service
- *
- * Resolution order:
- *   development / test: process.env (populated by dotenv in server.ts)
- *   production:         AWS Secrets Manager → merged with process.env
- *
- * The config object is frozen after construction — no runtime mutation.
- * All consumers import `config` from this module. Never read process.env directly.
- */
-
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
-// ---------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------
 
 export interface AppConfig {
   // Runtime
@@ -118,9 +105,7 @@ export interface AppConfig {
   logFormat: 'json' | 'pretty';
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 function requireEnv(key: string): string {
   const value = process.env[key];
@@ -149,9 +134,7 @@ function envBool(key: string, fallback: boolean): boolean {
   return value.toLowerCase() === 'true' || value === '1';
 }
 
-// ---------------------------------------------------------------------------
 // AWS Secrets Manager resolver (production only)
-// ---------------------------------------------------------------------------
 
 async function resolveAwsSecrets(region: string, secretName: string): Promise<void> {
   const client = new SecretsManagerClient({ region });
@@ -184,9 +167,7 @@ async function resolveAwsSecrets(region: string, secretName: string): Promise<vo
   }
 }
 
-// ---------------------------------------------------------------------------
 // Config builder
-// ---------------------------------------------------------------------------
 
 function buildConfig(): AppConfig {
   const nodeEnv = (process.env['NODE_ENV'] ?? 'development') as AppConfig['nodeEnv'];
@@ -302,9 +283,7 @@ function buildConfig(): AppConfig {
   return Object.freeze(config);
 }
 
-// ---------------------------------------------------------------------------
 // Exported singleton — set after init()
-// ---------------------------------------------------------------------------
 
 let _config: AppConfig | null = null;
 

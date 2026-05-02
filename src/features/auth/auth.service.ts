@@ -1,15 +1,3 @@
-/**
- * FlowKey — Auth Service (v2)
- *
- * Registration flow:
- *   1. initiate()     — phone or email → send OTP
- *   2. verifyOtp()    — verify OTP → mark verified in Redis
- *   3. checkUsername()— real-time availability check
- *   4. complete()     — username + passcode → activate account, issue tokens
- *
- * Login: phone or email + passcode → tokens
- */
-
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -32,13 +20,10 @@ import type {
   AuthTokens,
 } from './auth.types';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
-// ---------------------------------------------------------------------------
-// Argon2id helpers
-// ---------------------------------------------------------------------------
 
+// Argon2id helpers
 function argon2Opts(): argon2.Options & { raw?: false } {
   const cfg = config();
   return {
@@ -68,17 +53,14 @@ async function verifyValue(hash: string, val: string): Promise<boolean> {
   return argon2.verify(hash, val);
 }
 
-// ---------------------------------------------------------------------------
-// Step 1 — Initiate registration
-// ---------------------------------------------------------------------------
 
+// Step 1 — Initiate registration
 export async function initiateRegistration(
   contact: string,
   contactType: 'phone' | 'email',
 ): Promise<InitiateResult> {
   // Check uniqueness
   if (contactType === 'phone') {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const existing = await db.user.findUnique({ where: { phone: contact }, select: { id: true } });
     if (existing)
       throw new AppError(
@@ -86,7 +68,6 @@ export async function initiateRegistration(
         'An account with this phone number already exists.',
       );
   } else {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const existing = await db.user.findUnique({ where: { email: contact }, select: { id: true } });
     if (existing)
       throw new AppError(
@@ -96,7 +77,6 @@ export async function initiateRegistration(
   }
 
   // Create pending user
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const user = await db.user.create({
     data: {
       phone: contactType === 'phone' ? contact : null,
@@ -147,16 +127,14 @@ export async function initiateRegistration(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Step 2 — Verify OTP
-// ---------------------------------------------------------------------------
 
+// Step 2 — Verify OTP
 export async function verifyRegistrationOtp(
   userId: string,
   otp: string,
   contactType: 'phone' | 'email',
 ): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { id: true, registration_step: true, registration_channel: true },
@@ -175,20 +153,17 @@ export async function verifyRegistrationOtp(
   await verifyOtp(userId, contactType, otp);
 
   // Mark OTP as verified
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.user.update({
     where: { id: userId },
     data: { registration_step: 'otp_verified' },
   });
 }
 
-// ---------------------------------------------------------------------------
-// Step 3 — Check username availability
-// ---------------------------------------------------------------------------
 
+// Step 3 — Check username availability
 export async function checkUsernameAvailable(username: string): Promise<boolean> {
   const normalised = username.toLowerCase();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const existing = await db.user.findFirst({
     where: { username: { equals: normalised, mode: 'insensitive' } },
     select: { id: true },
@@ -196,9 +171,9 @@ export async function checkUsernameAvailable(username: string): Promise<boolean>
   return existing === null;
 }
 
-// ---------------------------------------------------------------------------
+
 // Step 4 — Complete registration
-// ---------------------------------------------------------------------------
+
 
 export async function completeRegistration(payload: {
   registration_id: string;
@@ -209,7 +184,7 @@ export async function completeRegistration(payload: {
   ip_address: string;
   user_agent: string;
 }): Promise<CompleteRegistrationResult> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const user = await db.user.findUnique({
     where: { id: payload.registration_id },
     select: { id: true, registration_step: true, email: true, display_name: true },
@@ -244,9 +219,9 @@ export async function completeRegistration(payload: {
   const universalId = await generateUniversalId(async (id) => {
     // Check both active users and history
     const [activeUser, history] = await Promise.all([
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
       db.user.findUnique({ where: { universal_id: id }, select: { id: true } }),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
       db.universalIdHistory.findUnique({ where: { universal_id: id }, select: { id: true } }),
     ]);
     return activeUser !== null || history !== null;
@@ -256,12 +231,12 @@ export async function completeRegistration(payload: {
   const username = payload.username.toLowerCase();
 
   // Atomic activation
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const activated = await db.$transaction(async (tx: Record<string, unknown>) => {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
     const txDb = tx as any;
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     const updated = await txDb.user.update({
       where: { id: payload.registration_id },
       data: {
@@ -282,17 +257,17 @@ export async function completeRegistration(payload: {
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await txDb.userAuth.update({
       where: { user_id: payload.registration_id },
       data: { login_passcode_hash: passcodeHash, argon2_params: argon2ParamsJson() },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await txDb.wallet.create({ data: { user_id: payload.registration_id } });
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await txDb.notificationPref.create({ data: { user_id: payload.registration_id } });
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await txDb.auditLog.create({
       data: {
         actor_id: payload.registration_id,
@@ -350,9 +325,9 @@ export async function completeRegistration(payload: {
   };
 }
 
-// ---------------------------------------------------------------------------
+
 // Login
-// ---------------------------------------------------------------------------
+
 
 export async function login(payload: {
   contact: string;
@@ -366,7 +341,7 @@ export async function login(payload: {
   const whereClause =
     payload.contact_type === 'phone' ? { phone: payload.contact } : { email: payload.contact };
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const user = await db.user.findUnique({
     where: whereClause,
     select: {
@@ -442,7 +417,7 @@ export async function login(payload: {
         u.auth.login_passcode_failed_attempts,
         u.auth.login_passcode_lockout_count,
       );
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
       await db.userAuth.update({
         where: { user_id: u.id },
         data: {
@@ -474,7 +449,7 @@ export async function login(payload: {
   };
 
   const cleared = await clearLockout(u.id, 'passcode');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: u.id },
     data: {
@@ -510,9 +485,9 @@ export async function login(payload: {
   };
 }
 
-// ---------------------------------------------------------------------------
+
 // Passcode management
-// ---------------------------------------------------------------------------
+
 
 export async function changePasscode(
   userId: string,
@@ -520,7 +495,7 @@ export async function changePasscode(
   currentPasscode: string,
   newPasscode: string,
 ): Promise<{ sessions_revoked: number }> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: {
@@ -558,7 +533,7 @@ export async function changePasscode(
       a.login_passcode_failed_attempts,
       a.login_passcode_lockout_count,
     );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await db.userAuth.update({
       where: { user_id: userId },
       data: {
@@ -572,7 +547,7 @@ export async function changePasscode(
   }
 
   const newHash = await hashValue(newPasscode);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -592,7 +567,7 @@ export async function initiateForgotPasscode(
   contactType: 'phone' | 'email',
 ): Promise<{ reset_token: string; expires_at: Date }> {
   const whereClause = contactType === 'phone' ? { phone: contact } : { email: contact };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const user = await db.user.findUnique({
     where: whereClause,
     select: { id: true, account_status: true, email: true },
@@ -643,7 +618,7 @@ export async function resetPasscode(payload: {
 }): Promise<AuthTokens> {
   const userId = await validateResetToken(payload.reset_token);
   // Get the registration channel to know which OTP type to verify
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const userRecord = await db.user.findUniqueOrThrow({
     where: { id: userId },
     select: { registration_channel: true, kyc_tier: true },
@@ -656,7 +631,7 @@ export async function resetPasscode(payload: {
   await verifyOtp(userId, registration_channel as 'phone' | 'email', payload.otp);
 
   const newHash = await hashValue(payload.new_passcode);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -681,16 +656,16 @@ export async function resetPasscode(payload: {
   });
 }
 
-// ---------------------------------------------------------------------------
+
 // Transaction PIN
-// ---------------------------------------------------------------------------
+
 
 export async function setTransactionPin(
   userId: string,
   loginPasscode: string,
   pin: string,
 ): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: { login_passcode_hash: true, transaction_pin_hash: true },
@@ -702,7 +677,7 @@ export async function setTransactionPin(
     throw new AppError(ErrorCode.CONFLICT, 'PIN already set. Use change PIN.');
   if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: { transaction_pin_hash: await hashValue(pin) },
@@ -714,7 +689,7 @@ export async function changeTransactionPin(
   currentPin: string,
   newPin: string,
 ): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: {
@@ -749,7 +724,7 @@ export async function changeTransactionPin(
       a.transaction_pin_failed_attempts,
       a.transaction_pin_lockout_count,
     );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await db.userAuth.update({
       where: { user_id: userId },
       data: {
@@ -762,7 +737,7 @@ export async function changeTransactionPin(
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Current PIN is incorrect.');
   }
   const cleared = await clearLockout(userId, 'pin');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -775,7 +750,7 @@ export async function changeTransactionPin(
 }
 
 export async function deleteTransactionPin(userId: string, loginPasscode: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: { login_passcode_hash: true },
@@ -785,7 +760,7 @@ export async function deleteTransactionPin(userId: string, loginPasscode: string
   if (!a.login_passcode_hash) throw new AppError(ErrorCode.NOT_FOUND, 'No passcode set.');
   if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -798,7 +773,7 @@ export async function deleteTransactionPin(userId: string, loginPasscode: string
 }
 
 export async function verifyTransactionPin(userId: string, pin: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: {
@@ -833,7 +808,7 @@ export async function verifyTransactionPin(userId: string, pin: string): Promise
       a.transaction_pin_failed_attempts,
       a.transaction_pin_lockout_count,
     );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await db.userAuth.update({
       where: { user_id: userId },
       data: {
@@ -846,7 +821,7 @@ export async function verifyTransactionPin(userId: string, pin: string): Promise
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Incorrect PIN.');
   }
   const cleared = await clearLockout(userId, 'pin');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -857,12 +832,12 @@ export async function verifyTransactionPin(userId: string, pin: string): Promise
   });
 }
 
-// ---------------------------------------------------------------------------
+
 // Universal Payment PIN (UPP)
-// ---------------------------------------------------------------------------
+
 
 export async function setUpp(userId: string, loginPasscode: string, upp: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: { login_passcode_hash: true, upp_hash: true },
@@ -874,7 +849,7 @@ export async function setUpp(userId: string, loginPasscode: string, upp: string)
     throw new AppError(ErrorCode.CONFLICT, 'Universal Payment PIN already set. Use change UPP.');
   if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: { upp_hash: await hashValue(upp) },
@@ -882,7 +857,7 @@ export async function setUpp(userId: string, loginPasscode: string, upp: string)
 }
 
 export async function changeUpp(userId: string, currentUpp: string, newUpp: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   const auth = await db.userAuth.findUnique({
     where: { user_id: userId },
     select: {
@@ -913,7 +888,7 @@ export async function changeUpp(userId: string, currentUpp: string, newUpp: stri
       a.upp_failed_attempts,
       a.upp_lockout_count,
     );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     await db.userAuth.update({
       where: { user_id: userId },
       data: {
@@ -925,7 +900,7 @@ export async function changeUpp(userId: string, currentUpp: string, newUpp: stri
     });
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Current UPP is incorrect.');
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
@@ -937,15 +912,11 @@ export async function changeUpp(userId: string, currentUpp: string, newUpp: stri
   });
 }
 
-// ---------------------------------------------------------------------------
 // Universal ID revocation
-// ---------------------------------------------------------------------------
-
 export async function revokeUniversalId(
   userId: string,
   loginPasscode: string,
 ): Promise<{ new_universal_id: string; next_revocation_allowed_at: Date }> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const user = await db.user.findUnique({
     where: { id: userId },
     select: {
@@ -975,22 +946,21 @@ export async function revokeUniversalId(
   // Generate new ID (also checks history table)
   const newId = await generateUniversalId(async (id) => {
     const [active, hist] = await Promise.all([
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
       db.user.findUnique({ where: { universal_id: id }, select: { id: true } }),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
       db.universalIdHistory.findUnique({ where: { universal_id: id }, select: { id: true } }),
     ]);
     return active !== null || hist !== null;
   });
 
   const now = new Date();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.$transaction([
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     db.universalIdHistory.create({
       data: { user_id: userId, universal_id: u.universal_id, revoked_at: now },
     }),
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+
     db.user.update({
       where: { id: userId },
       data: { universal_id: newId, universal_id_revoked_at: now },
@@ -1000,10 +970,7 @@ export async function revokeUniversalId(
   return { new_universal_id: newId, next_revocation_allowed_at: nextRevocationAllowedAt(now) };
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
-
 async function generateResetToken(userId: string): Promise<string> {
   const { randomBytes } = await import('crypto');
   const token = randomBytes(32).toString('hex');

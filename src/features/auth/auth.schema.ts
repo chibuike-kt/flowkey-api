@@ -1,7 +1,3 @@
-/**
- * FlowKey — Auth Zod Schemas
- */
-
 import { z } from 'zod';
 
 const phoneRegex = /^\+234[0-9]{10}$/;

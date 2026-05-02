@@ -1,35 +1,18 @@
-/**
- * FlowKey — Notification Service
- *
- * Handles all notification delivery:
- *   - Email via Nodemailer (active)
- *   - SMS via Twilio (stubbed — infrastructure ready, not wired to live provider)
- *   - Push via Firebase Cloud Messaging (infrastructure ready, Phase 14 full wiring)
- *
- * All sends are async — callers never wait on delivery.
- * Phase 14 will wire these through BullMQ workers.
- * For now (Phase 5): email sends directly, SMS logs with TODO marker.
- */
-
 import * as nodemailer from 'nodemailer';
 import { config } from '../../config';
 import { logger } from '../../common/utils/logger';
 
-// ---------------------------------------------------------------------------
 // Result type — callers use this to apply environment-aware delivery logic.
 // The notification service NEVER throws — it always returns a result.
 // Environment-aware behaviour (fail in prod, warn in dev) lives in the
 // service layer that calls these functions, not here.
-// ---------------------------------------------------------------------------
 
 export type NotificationResult = {
   success: boolean;
   error?: string;
 };
 
-// ---------------------------------------------------------------------------
 // Email transport (Nodemailer)
-// ---------------------------------------------------------------------------
 
 let _transporter: nodemailer.Transporter | null = null;
 
@@ -51,9 +34,7 @@ function getTransporter(): nodemailer.Transporter {
   return _transporter;
 }
 
-// ---------------------------------------------------------------------------
 // Email templates
-// ---------------------------------------------------------------------------
 
 function otpEmailHtml(otp: string, purpose: string): string {
   return `
@@ -92,9 +73,7 @@ function otpEmailHtml(otp: string, purpose: string): string {
   `.trim();
 }
 
-// ---------------------------------------------------------------------------
 // Public email senders
-// ---------------------------------------------------------------------------
 
 export async function sendOtpEmail(
   to: string,
@@ -206,15 +185,12 @@ export async function sendPasscodeChangedEmail(to: string, displayName: string):
   }
 }
 
-// ---------------------------------------------------------------------------
 // SMS — Twilio (STUBBED — infrastructure ready, not wired to live provider)
-// ---------------------------------------------------------------------------
 // To activate:
 //   1. npm install twilio
 //   2. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to .env
 //   3. Uncomment the Twilio client block below
 //   4. Replace the logger.info stubs with actual Twilio calls
-// ---------------------------------------------------------------------------
 
 export async function sendOtpSms(to: string, otp: string): Promise<NotificationResult> {
   // STUB — SMS not yet wired to a live provider.
@@ -264,9 +240,7 @@ export async function sendGenericSms(to: string, message: string): Promise<void>
   // await client.messages.create({ body: message, from: cfg.twilioFromNumber, to });
 }
 
-// ---------------------------------------------------------------------------
 // Push (Firebase Cloud Messaging) — Phase 14 full wiring
-// ---------------------------------------------------------------------------
 
 export async function sendPushNotification(
   fcmToken: string,

@@ -1,20 +1,3 @@
-/**
- * FlowKey — OTP Service
- *
- * Manages phone and email OTPs using Redis.
- *
- * Redis key structure:
- *   otp:{user_id}:{type}         → OTP value (TTL = OTP_TTL_SECONDS)
- *   otp:{user_id}:{type}:attempts → attempt count (TTL = OTP_TTL_SECONDS)
- *   otp:{user_id}:{type}:resend  → resend count (TTL = OTP_RESEND_WINDOW_SECONDS)
- *
- * Security invariants:
- *   - OTP is invalidated immediately when a resend is requested
- *   - Max 3 submission attempts before OTP is invalidated
- *   - Max 3 resends within 30-minute window
- *   - Constant-time comparison to prevent timing attacks
- */
-
 import { timingSafeEqual } from 'crypto';
 import { randomInt } from 'crypto';
 import { redis } from '../../common/utils/redis';
@@ -22,9 +5,9 @@ import { config } from '../../config';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import type { OtpType } from './auth.types';
 
-// ---------------------------------------------------------------------------
+
 // Key helpers
-// ---------------------------------------------------------------------------
+
 
 function otpKey(userId: string, type: OtpType): string {
   return `otp:${userId}:${type}`;
@@ -38,9 +21,9 @@ function resendKey(userId: string, type: OtpType): string {
   return `otp:${userId}:${type}:resend`;
 }
 
-// ---------------------------------------------------------------------------
+
 // OTP generation
-// ---------------------------------------------------------------------------
+
 
 /**
  * Generate a cryptographically random 6-digit OTP.
@@ -50,9 +33,9 @@ function generateOtpValue(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
-// ---------------------------------------------------------------------------
+
 // Public API
-// ---------------------------------------------------------------------------
+
 
 /**
  * Generate and store a new OTP for the given user and type.

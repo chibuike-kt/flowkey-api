@@ -1,7 +1,3 @@
-/**
- * FlowKey — Auth Feature Types
- */
-
 export interface InitiateRegistrationPayload {
   contact: string; // phone number OR email address
   contact_type: 'phone' | 'email';

@@ -1,34 +1,11 @@
-/**
- * FlowKey — Lockout Service
- *
- * Manages progressive lockout for login passcode and transaction PIN.
- * Redis is the fast-path check. DB columns are the persistent record.
- *
- * Login passcode lockout:
- *   5 failures → 15 min lock
- *   10 failures → 1 hr lock
- *   15 failures → 24 hr lock
- *   After 3rd lockout event → hard lock (admin unlock required)
- *
- * Transaction PIN lockout:
- *   3 failures → 30 min hard lock
- *   After 2nd lockout event → hard lock (admin unlock required)
- *
- * Redis key structure:
- *   lockout:{user_id}:passcode:fails    → failure count
- *   lockout:{user_id}:passcode:until    → locked_until timestamp (epoch ms)
- *   lockout:{user_id}:pin:fails         → failure count
- *   lockout:{user_id}:pin:until         → locked_until timestamp (epoch ms)
- */
-
 import { redis } from '../../common/utils/redis';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 
 export type LockoutFactor = 'passcode' | 'pin';
 
-// ---------------------------------------------------------------------------
+
 // Lockout thresholds
-// ---------------------------------------------------------------------------
+
 
 const PASSCODE_LOCKOUT_SCHEDULE = [
   { failureThreshold: 5, durationMs: 15 * 60 * 1000 }, // 15 min
@@ -41,9 +18,9 @@ const PIN_HARD_LOCK_FAILURES = 3;
 const PIN_HARD_LOCK_AFTER_LOCKOUTS = 2;
 const PIN_LOCK_DURATION_MS = 30 * 60 * 1000; // 30 min
 
-// ---------------------------------------------------------------------------
+
 // Key helpers
-// ---------------------------------------------------------------------------
+
 
 function failKey(userId: string, factor: LockoutFactor): string {
   return `lockout:${userId}:${factor}:fails`;
@@ -53,9 +30,9 @@ function untilKey(userId: string, factor: LockoutFactor): string {
   return `lockout:${userId}:${factor}:until`;
 }
 
-// ---------------------------------------------------------------------------
+
 // Public API
-// ---------------------------------------------------------------------------
+
 
 /**
  * Assert the factor is not currently locked.
@@ -154,9 +131,9 @@ export async function clearLockout(
   return { newFailCount: 0, lockedUntil: null, hardLocked: false };
 }
 
-// ---------------------------------------------------------------------------
+
 // Internal helpers
-// ---------------------------------------------------------------------------
+
 
 async function applyPasscodeLockout(
   userId: string,
