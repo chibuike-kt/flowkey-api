@@ -14,8 +14,6 @@ import morgan from 'morgan';
 import { config } from './config';
 import { errorHandler } from './common/middleware/errorHandler';
 import { notFoundHandler } from './common/middleware/notFound';
-import swaggerUi from 'swagger-ui-express';
-import { swaggerSpec } from './docs/swagger';
 
 // Phase 5 — Auth & Settings routers (active)
 import { authRouter } from './features/auth/auth.router';
@@ -78,11 +76,6 @@ export function createApp(): express.Application {
   if (!cfg.isTest) {
     app.use(morgan(cfg.isProduction ? 'combined' : 'dev'));
   }
-
-  // -------------------------------------------------------------------------
-  // Swagger / OpenAPI
-  // -------------------------------------------------------------------------
-  app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 
   // -------------------------------------------------------------------------
