@@ -2,36 +2,30 @@ import * as nodemailer from 'nodemailer';
 import { config } from '../../config';
 import { logger } from '../../common/utils/logger';
 
-/**
- * RESULT TYPE
- * Notification layer NEVER throws.
- * It always returns a structured result.
- */
 export type NotificationResult = {
   success: boolean;
   error?: string;
 };
 
-/**
- * SMTP TRANSPORT SINGLETON
- * IMPORTANT:
- * - Sync creation only
- * - No async verify here (avoid startup delays and Render cold-start issues)
- */
 let _transporter: nodemailer.Transporter | null = null;
 
 function createTransporter(): nodemailer.Transporter {
   const cfg = config();
 
   return nodemailer.createTransport({
-    host: cfg.smtpHost,
-    port: cfg.smtpPort,
-    secure: cfg.smtpSecure,
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true, // REQUIRED for 465
     auth: {
       user: cfg.smtpUser,
       pass: cfg.smtpPass,
     },
-    requireTLS: true,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+    tls: {
+      rejectUnauthorized: false,
+    },
   });
 }
 

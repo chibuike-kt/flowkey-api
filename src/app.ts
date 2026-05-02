@@ -1,12 +1,3 @@
-/**
- * FlowKey — Express Application Factory
- *
- * This module creates and configures the Express app.
- * It does NOT call server.listen — that lives in server.ts.
- * This separation allows integration tests to import the app
- * without starting the HTTP server.
- */
-
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -37,9 +28,7 @@ export function createApp(): express.Application {
   const app = express();
   const cfg = config();
 
-  // -------------------------------------------------------------------------
   // Security headers
-  // -------------------------------------------------------------------------
   app.use(
     helmet({
       contentSecurityPolicy: false,
@@ -51,9 +40,7 @@ export function createApp(): express.Application {
 
   app.disable('x-powered-by');
 
-  // -------------------------------------------------------------------------
   // CORS
-  // -------------------------------------------------------------------------
   app.use(
     cors({
       origin: cfg.isProduction
@@ -65,22 +52,16 @@ export function createApp(): express.Application {
     }),
   );
 
-  // -------------------------------------------------------------------------
   // Body parsing
-  // -------------------------------------------------------------------------
   app.use(express.json({ limit: '1mb' }));
 
-  // -------------------------------------------------------------------------
   // Logging
-  // -------------------------------------------------------------------------
   if (!cfg.isTest) {
     app.use(morgan(cfg.isProduction ? 'combined' : 'dev'));
   }
 
 
-  // -------------------------------------------------------------------------
   // Health check
-  // -------------------------------------------------------------------------
   app.get('/health', (_req, res) => {
     res.status(200).json({
       status: 'ok',
@@ -90,9 +71,7 @@ export function createApp(): express.Application {
     });
   });
 
-  // -------------------------------------------------------------------------
   // API routes
-  // -------------------------------------------------------------------------
   const apiPrefix = `/api/${cfg.apiVersion}`;
 
   app.use(`${apiPrefix}/auth`, authRouter);
@@ -111,19 +90,13 @@ export function createApp(): express.Application {
   // app.use(`${apiPrefix}/disputes`, disputeRouter);
   // app.use(`${apiPrefix}/admin`, adminRouter);
 
-  // -------------------------------------------------------------------------
   // Webhooks (separate from API)
-  // -------------------------------------------------------------------------
   // app.use('/webhooks/v1', webhookRouter);
 
-  // -------------------------------------------------------------------------
   // 404 handler
-  // -------------------------------------------------------------------------
   app.use(notFoundHandler);
 
-  // -------------------------------------------------------------------------
   // Global error handler
-  // -------------------------------------------------------------------------
   app.use(errorHandler);
 
   return app;
