@@ -1,0 +1,251 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "FlowKey Auth API",
+    "version": "1.0.0",
+    "description": "Authentication system for FlowKey API (registration, OTP, login, session management)."
+  },
+  "servers": [
+    {
+      "url": "https://flowkey-api.onrender.com/api/v1",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:3000/api/v1",
+      "description": "Local"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Authentication flows"
+    }
+  ],
+  "paths": {
+    "/auth/initiate": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Initiate registration",
+        "description": "Starts registration by sending OTP to phone or email.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["contact", "contact_type"],
+                "properties": {
+                  "contact": {
+                    "type": "string",
+                    "example": "+2348012345678"
+                  },
+                  "contact_type": {
+                    "type": "string",
+                    "enum": ["phone", "email"],
+                    "example": "phone"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP sent successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "registration_id": "reg_123456"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/verify-otp": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Verify OTP",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["registration_id", "otp", "contact_type"],
+                "properties": {
+                  "registration_id": {
+                    "type": "string"
+                  },
+                  "otp": {
+                    "type": "string",
+                    "example": "123456"
+                  },
+                  "contact_type": {
+                    "type": "string",
+                    "enum": ["phone", "email"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP verified"
+          }
+        }
+      }
+    },
+    "/auth/check-username": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Check username availability",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "kingsley_kt"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Username availability result"
+          }
+        }
+      }
+    },
+    "/auth/complete": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Complete registration",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "registration_id",
+                  "username",
+                  "login_passcode"
+                ],
+                "properties": {
+                  "registration_id": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "login_passcode": {
+                    "type": "string",
+                    "example": "123456"
+                  },
+                  "device_id": {
+                    "type": "string"
+                  },
+                  "fcm_token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Account created successfully"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Login user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "contact",
+                  "contact_type",
+                  "login_passcode"
+                ],
+                "properties": {
+                  "contact": {
+                    "type": "string"
+                  },
+                  "contact_type": {
+                    "type": "string",
+                    "enum": ["phone", "email"]
+                  },
+                  "login_passcode": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "string"
+                  },
+                  "fcm_token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "example": {
+                  "access_token": "jwt_access_token",
+                  "refresh_token": "jwt_refresh_token"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get authenticated user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User profile"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}
