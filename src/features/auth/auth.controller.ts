@@ -1,3 +1,8 @@
+/**
+ * FlowKey — Auth Controller
+ * HTTP layer only. No business logic here.
+ */
+
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -49,7 +54,16 @@ export async function initiateRegistration(
         otp_expires_at: result.otp_expires_at,
         message: `A verification code has been sent to your ${body.contact_type}.`,
         ...(cfg.isDevelopment
-          ? { _dev_note: 'Check server logs for OTP in d
+          ? { _dev_note: 'Check server logs for OTP in development mode.' }
+          : {}),
+      }),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Step 2 — Verify OTP
 export async function verifyRegistrationOtp(
   req: Request,
   res: Response,
@@ -57,7 +71,7 @@ export async function verifyRegistrationOtp(
 ): Promise<void> {
   try {
     const body = VerifyOtpSchema.parse(req.body);
-
+    // contact_type comes from the body — client knows what channel they used
     const contactType = (req.body as { contact_type?: string }).contact_type as
       | 'phone'
       | 'email'
@@ -126,7 +140,6 @@ export async function checkUsername(
   }
 }
 
-
 // Step 4 — Complete registration
 export async function completeRegistration(
   req: Request,
@@ -149,7 +162,6 @@ export async function completeRegistration(
     next(err);
   }
 }
-
 
 // Login / Logout / Refresh / Me
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -206,7 +218,9 @@ export async function logoutAll(req: Request, res: Response, next: NextFunction)
 
 export async function getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (await import('../../common/utils/prisma.js')).prisma as any;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const user = await db.user.findUniqueOrThrow({
       where: { id: req.user!.sub },
       select: {
@@ -389,7 +403,9 @@ export async function revokeUniversalId(
 // Settings — Sessions
 export async function listSessions(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (await import('../../common/utils/prisma.js')).prisma as any;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const sessions = await db.deviceSession.findMany({
       where: { user_id: req.user!.sub, is_revoked: false },
       orderBy: { last_active: 'desc' },
