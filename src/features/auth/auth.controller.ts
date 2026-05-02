@@ -230,9 +230,7 @@ export async function logoutAll(req: Request, res: Response, next: NextFunction)
 
 export async function getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (await import('../../common/utils/prisma.js')).prisma as any;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const user = await db.user.findUniqueOrThrow({
       where: { id: req.user!.sub },
       select: {
@@ -277,9 +275,7 @@ export async function getMe(req: Request, res: Response, next: NextFunction): Pr
   }
 }
 
-// ---------------------------------------------------------------------------
 // Settings — Passcode
-// ---------------------------------------------------------------------------
 export async function changePasscode(
   req: Request,
   res: Response,
@@ -335,9 +331,7 @@ export async function resetPasscode(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Settings — Transaction PIN
-// ---------------------------------------------------------------------------
 export async function setTransactionPin(
   req: Request,
   res: Response,
@@ -380,9 +374,7 @@ export async function deleteTransactionPin(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Settings — Universal Payment PIN
-// ---------------------------------------------------------------------------
 export async function setUpp(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = SetUppSchema.parse(req.body);
@@ -403,9 +395,7 @@ export async function changeUpp(req: Request, res: Response, next: NextFunction)
   }
 }
 
-// ---------------------------------------------------------------------------
 // Settings — Universal ID revocation
-// ---------------------------------------------------------------------------
 export async function revokeUniversalId(
   req: Request,
   res: Response,
@@ -420,14 +410,10 @@ export async function revokeUniversalId(
   }
 }
 
-// ---------------------------------------------------------------------------
 // Settings — Sessions
-// ---------------------------------------------------------------------------
 export async function listSessions(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (await import('../../common/utils/prisma.js')).prisma as any;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     const sessions = await db.deviceSession.findMany({
       where: { user_id: req.user!.sub, is_revoked: false },
       orderBy: { last_active: 'desc' },

@@ -80,6 +80,17 @@ export interface AppConfig {
   premblyCircuitBreakerThreshold: number;
   premblyCircuitBreakerCooldownMs: number;
 
+  // KYC — per-tier transfer limits (kobo)
+  kycTier0DailyLimit: bigint; // unverified — no transfers
+  kycTier1DailyLimit: bigint; // BVN verified
+  kycTier2DailyLimit: bigint; // NIN + selfie
+  kycTier3DailyLimit: bigint; // address + docs
+  kycTier1SingleLimit: bigint;
+  kycTier2SingleLimit: bigint;
+  kycTier3SingleLimit: bigint;
+  kycCooldownTier1Hours: number;
+  kycCooldownTier2PlusHours: number;
+
   // Providus — UNCONFIRMED, populated when Phase 9 is reached
   providusApiBaseUrl: string;
   providusClientId: string;
@@ -244,6 +255,21 @@ function buildConfig(): AppConfig {
     premblyTimeoutMs: envInt('PREMBLY_TIMEOUT_MS', 15000),
     premblyCircuitBreakerThreshold: envInt('PREMBLY_CIRCUIT_BREAKER_THRESHOLD', 5),
     premblyCircuitBreakerCooldownMs: envInt('PREMBLY_CIRCUIT_BREAKER_COOLDOWN_MS', 60000),
+
+    // KYC — per-tier transfer limits (kobo)
+    // Tier 0: no transfers until BVN verified
+    // Tier 1 (BVN): ₦50k/day, ₦20k single
+    // Tier 2 (NIN+selfie): ₦500k/day, ₦200k single
+    // Tier 3 (address+docs): ₦5m/day, ₦2m single
+    kycTier0DailyLimit: BigInt(process.env['KYC_TIER0_DAILY_LIMIT'] ?? '0'),
+    kycTier1DailyLimit: BigInt(process.env['KYC_TIER1_DAILY_LIMIT'] ?? '5000000'),
+    kycTier2DailyLimit: BigInt(process.env['KYC_TIER2_DAILY_LIMIT'] ?? '50000000'),
+    kycTier3DailyLimit: BigInt(process.env['KYC_TIER3_DAILY_LIMIT'] ?? '500000000'),
+    kycTier1SingleLimit: BigInt(process.env['KYC_TIER1_SINGLE_LIMIT'] ?? '2000000'),
+    kycTier2SingleLimit: BigInt(process.env['KYC_TIER2_SINGLE_LIMIT'] ?? '20000000'),
+    kycTier3SingleLimit: BigInt(process.env['KYC_TIER3_SINGLE_LIMIT'] ?? '200000000'),
+    kycCooldownTier1Hours: envInt('KYC_COOLDOWN_TIER1_HOURS', 24),
+    kycCooldownTier2PlusHours: envInt('KYC_COOLDOWN_TIER2PLUS_HOURS', 48),
 
     // Providus — UNCONFIRMED: these will be required fields when Phase 9 begins.
     // The assumption flag from Phase 1 remains open. Do not use these values until confirmed.
