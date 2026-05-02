@@ -16,12 +16,10 @@ export type NotificationResult = {
 
 let _transporter: nodemailer.Transporter | null = null;
 
-function getTransporter(): nodemailer.Transporter {
-  if (_transporter) return _transporter;
-
+function createTransporter() {
   const cfg = config();
 
-  _transporter = nodemailer.createTransport({
+  return nodemailer.createTransport({
     host: cfg.smtpHost,
     port: cfg.smtpPort,
     secure: cfg.smtpSecure,
@@ -29,7 +27,23 @@ function getTransporter(): nodemailer.Transporter {
       user: cfg.smtpUser,
       pass: cfg.smtpPass,
     },
+    requireTLS: true,
   });
+}
+
+export async function getTransporter(): Promise<nodemailer.Transporter> {
+  if (!_transporter) {
+    _transporter = createTransporter();
+
+    try {
+      await _transporter.verify();
+      console.log('SMTP connected successfully');
+    } catch (err) {
+      console.error('SMTP connection failed:', err);
+      _transporter = null;
+      throw err;
+    }
+  }
 
   return _transporter;
 }

@@ -1,10 +1,11 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "FlowKey Auth API",
+    "title": "FlowKey API",
     "version": "1.0.0",
-    "description": "Authentication system for FlowKey API (registration, OTP, login, session management)."
+    "description": "Production-grade API for FlowKey with Stripe-style consistency, security, and response contracts."
   },
+
   "servers": [
     {
       "url": "https://flowkey-api.onrender.com/api/v1",
@@ -15,192 +16,141 @@
       "description": "Local"
     }
   ],
-  "tags": [
+
+  "security": [
     {
-      "name": "Auth",
-      "description": "Authentication flows"
+      "bearerAuth": []
     }
   ],
+
+  "tags": [
+    { "name": "Auth", "description": "Authentication & session management" },
+    { "name": "Registration", "description": "User onboarding flow" },
+    { "name": "Health", "description": "System health checks" }
+  ],
+
   "paths": {
     "/auth/initiate": {
       "post": {
-        "tags": ["Auth"],
+        "tags": ["Registration"],
         "summary": "Initiate registration",
-        "description": "Starts registration by sending OTP to phone or email.",
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["contact", "contact_type"],
-                "properties": {
-                  "contact": {
-                    "type": "string",
-                    "example": "+2348012345678"
-                  },
-                  "contact_type": {
-                    "type": "string",
-                    "enum": ["phone", "email"],
-                    "example": "phone"
-                  }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/InitiateRegistrationRequest" }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "OTP sent successfully",
+            "description": "OTP initiated",
             "content": {
               "application/json": {
-                "example": {
-                  "success": true,
-                  "data": {
-                    "registration_id": "reg_123456"
-                  }
-                }
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
               }
             }
           }
         }
       }
     },
+
     "/auth/verify-otp": {
       "post": {
-        "tags": ["Auth"],
+        "tags": ["Registration"],
         "summary": "Verify OTP",
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["registration_id", "otp", "contact_type"],
-                "properties": {
-                  "registration_id": {
-                    "type": "string"
-                  },
-                  "otp": {
-                    "type": "string",
-                    "example": "123456"
-                  },
-                  "contact_type": {
-                    "type": "string",
-                    "enum": ["phone", "email"]
-                  }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/VerifyOtpRequest" }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "OTP verified"
+            "description": "OTP verified",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+              }
+            }
           }
         }
       }
     },
+
     "/auth/check-username": {
       "get": {
-        "tags": ["Auth"],
+        "tags": ["Registration"],
         "summary": "Check username availability",
         "parameters": [
           {
             "name": "username",
             "in": "query",
             "required": true,
-            "schema": {
-              "type": "string",
-              "example": "kingsley_kt"
-            }
+            "schema": { "type": "string" }
           }
         ],
         "responses": {
           "200": {
-            "description": "Username availability result"
+            "description": "Username status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+              }
+            }
           }
         }
       }
     },
+
     "/auth/complete": {
       "post": {
-        "tags": ["Auth"],
+        "tags": ["Registration"],
         "summary": "Complete registration",
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "registration_id",
-                  "username",
-                  "login_passcode"
-                ],
-                "properties": {
-                  "registration_id": {
-                    "type": "string"
-                  },
-                  "username": {
-                    "type": "string"
-                  },
-                  "login_passcode": {
-                    "type": "string",
-                    "example": "123456"
-                  },
-                  "device_id": {
-                    "type": "string"
-                  },
-                  "fcm_token": {
-                    "type": "string"
-                  }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/CompleteRegistrationRequest" }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Account created successfully"
+            "description": "Account created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+              }
+            }
           }
         }
       }
     },
+
     "/auth/login": {
       "post": {
         "tags": ["Auth"],
         "summary": "Login user",
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "contact",
-                  "contact_type",
-                  "login_passcode"
-                ],
-                "properties": {
-                  "contact": {
-                    "type": "string"
-                  },
-                  "contact_type": {
-                    "type": "string",
-                    "enum": ["phone", "email"]
-                  },
-                  "login_passcode": {
-                    "type": "string"
-                  },
-                  "device_id": {
-                    "type": "string"
-                  },
-                  "fcm_token": {
-                    "type": "string"
-                  }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
             }
           }
         },
@@ -209,42 +159,159 @@
             "description": "Login successful",
             "content": {
               "application/json": {
-                "example": {
-                  "access_token": "jwt_access_token",
-                  "refresh_token": "jwt_refresh_token"
-                }
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
               }
             }
           }
         }
       }
     },
+
     "/auth/me": {
       "get": {
         "tags": ["Auth"],
-        "summary": "Get authenticated user",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
+        "summary": "Get current user",
         "responses": {
           "200": {
-            "description": "User profile"
-          },
-          "401": {
-            "description": "Unauthorized"
+            "description": "User profile",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Service healthy"
           }
         }
       }
     }
   },
+
   "components": {
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT"
+      }
+    },
+
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "example": "uuid-v4"
+        },
+        "description": "Ensures safe retries for POST requests"
+      }
+    },
+
+    "schemas": {
+      "ApiResponse": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": { "nullable": true },
+          "error": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/ApiError" },
+              { "type": "null" }
+            ]
+          },
+          "meta": {
+            "type": "object",
+            "nullable": true
+          }
+        }
+      },
+
+      "ApiError": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "VALIDATION_ERROR"
+          },
+          "message": {
+            "type": "string",
+            "example": "Invalid request payload"
+          },
+          "details": {
+            "type": "object",
+            "nullable": true
+          }
+        }
+      },
+
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "example": 1 },
+          "limit": { "type": "integer", "example": 20 },
+          "total": { "type": "integer", "example": 100 },
+          "has_next": { "type": "boolean" }
+        }
+      },
+
+      "InitiateRegistrationRequest": {
+        "type": "object",
+        "required": ["contact", "contact_type"],
+        "properties": {
+          "contact": { "type": "string" },
+          "contact_type": {
+            "type": "string",
+            "enum": ["phone", "email"]
+          }
+        }
+      },
+
+      "VerifyOtpRequest": {
+        "type": "object",
+        "required": ["registration_id", "otp", "contact_type"],
+        "properties": {
+          "registration_id": { "type": "string" },
+          "otp": { "type": "string" },
+          "contact_type": { "type": "string", "enum": ["phone", "email"] }
+        }
+      },
+
+      "CompleteRegistrationRequest": {
+        "type": "object",
+        "required": ["registration_id", "username", "login_passcode"],
+        "properties": {
+          "registration_id": { "type": "string" },
+          "username": { "type": "string" },
+          "login_passcode": { "type": "string" },
+          "device_id": { "type": "string" },
+          "fcm_token": { "type": "string" }
+        }
+      },
+
+      "LoginRequest": {
+        "type": "object",
+        "required": ["contact", "contact_type", "login_passcode"],
+        "properties": {
+          "contact": { "type": "string" },
+          "contact_type": { "type": "string", "enum": ["phone", "email"] },
+          "login_passcode": { "type": "string" },
+          "device_id": { "type": "string" },
+          "fcm_token": { "type": "string" }
+        }
       }
     }
   }
