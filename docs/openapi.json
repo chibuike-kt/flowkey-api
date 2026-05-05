@@ -1,316 +1,1103 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
-    "title": "FlowKey API",
+    "title": "FlowKey Auth API",
     "version": "1.0.0",
-    "description": "Production-grade API for FlowKey with Stripe-style consistency, security, and response contracts."
+    "description": "Complete authentication and identity API for FlowKey.## Registration Flow 1. `POST /auth/initiate` — provide phone or email, receive OTP 2. `POST /auth/verify-otp` — submit OTP 3. `GET /auth/check-username` — real-time availability check 4. `POST /auth/complete` — username + passcode → tokens issued ## Authentication All protected endpoints require `Authorization: Bearer <access_token>`. Access tokens expire after 15 minutes. Use `POST /auth/refresh` with a refresh token to obtain a new pair. ## Idempotency All state-mutating requests (`POST`, `DELETE`) require an `Idempotency-Key` header containing a UUID v4. The same key + same payload returns the original response. The same key + different payload returns 422. ## Response Envelope All responses follow: ```json\n{\n  \"success\": true,\n  \"data\": {},\n  \"meta\": null,\n  \"error\": null\n}\n```\nOn error:\n```json\n{\n  \"success\": false,\n  \"data\": null,\n  \"meta\": null,\n  \"error\": { \"code\": \"ERROR_CODE\", \"message\": \"Human readable message\" }\n}\n```\n\n## Auth Factors\n| Factor | Format | Purpose |\n|--------|--------|--------|\n| Login Passcode | 6 digits | App login |\n| Transaction PIN | 4 digits | In-app transfer confirmation |\n| Universal Payment PIN (UPP) | 6 digits | Payments via Universal ID on foreign device |",
+    "contact": {
+      "name": "FlowKey Engineering"
+    }
   },
-
   "servers": [
-    {
-      "url": "https://flowkey-api.onrender.com/api/v1",
-      "description": "Production"
-    },
-    {
-      "url": "http://localhost:3000/api/v1",
-      "description": "Local"
-    }
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://flowkey-api.onrender.com/api/v1", "description": "Production" }
   ],
-
-  "security": [
-    {
-      "bearerAuth": []
-    }
-  ],
-
   "tags": [
-    { "name": "Auth", "description": "Authentication & session management" },
-    { "name": "Registration", "description": "User onboarding flow" },
-    { "name": "Health", "description": "System health checks" }
+    { "name": "Registration", "description": "New account creation (4-step flow)" },
+    { "name": "Session", "description": "Login, logout, token refresh, session management" },
+    { "name": "Passcode", "description": "Login passcode management and recovery" },
+    { "name": "Transaction PIN", "description": "4-digit in-app transfer PIN" },
+    { "name": "Universal Payment PIN", "description": "6-digit UPP for Universal ID payments" },
+    { "name": "Universal ID", "description": "Universal ID revocation" },
+    { "name": "Sessions", "description": "Active session listing and revocation" }
   ],
-
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "RS256 JWT. Obtain via POST /auth/complete or POST /auth/login. Expires in 15 minutes."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Same key + same body = original response returned. Same key + different body = 422.",
+        "example": "550e8400-e29b-41d4-a716-446655440000"
+      }
+    },
+    "schemas": {
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success", "data", "meta", "error"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data": { "type": "object", "nullable": true },
+          "meta": { "type": "object", "nullable": true },
+          "error": { "type": "object", "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["success", "data", "meta", "error"],
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data": { "type": "object", "nullable": true, "example": null },
+          "meta": { "type": "object", "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "example": "INVALID_CREDENTIALS" },
+              "message": { "type": "string", "example": "Incorrect credentials." }
+            }
+          }
+        }
+      },
+      "AuthTokens": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string", "description": "RS256 JWT. Expires in 15 minutes." },
+          "refresh_token": { "type": "string", "description": "Opaque 256-bit token. Rotated on each use. Single-use." },
+          "expires_in": { "type": "integer", "example": 900, "description": "Access token TTL in seconds." }
+        }
+      },
+      "UserProfile": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "phone": { "type": "string", "nullable": true, "example": "+2348012345678" },
+          "email": { "type": "string", "nullable": true, "format": "email" },
+          "username": { "type": "string", "example": "kingsley_kt" },
+          "universal_id": { "type": "string", "example": "BOLT-KP-4821", "description": "Format: WORD-XX-NNNN. Used for payments on foreign devices." },
+          "kyc_tier": { "type": "integer", "minimum": 1, "maximum": 3, "example": 1 },
+          "account_status": { "type": "string", "enum": ["pending_verification", "active", "frozen", "closed"] },
+          "has_transaction_pin": { "type": "boolean" },
+          "has_upp": { "type": "boolean", "description": "Whether the user has set a Universal Payment PIN." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "device_id": { "type": "string" },
+          "ip_address": { "type": "string" },
+          "user_agent": { "type": "string" },
+          "last_active": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "is_current": { "type": "boolean", "description": "True if this is the session making the request." }
+        }
+      },
+      "ContactType": {
+        "type": "string",
+        "enum": ["phone", "email"],
+        "description": "The channel used for OTP delivery. Phone sends SMS, email sends email."
+      },
+      "PhoneNumber": {
+        "type": "string",
+        "pattern": "^\\+234[0-9]{10}$",
+        "example": "+2348012345678",
+        "description": "Nigerian phone number in E.164 format."
+      },
+      "LoginPasscode": {
+        "type": "string",
+        "pattern": "^\\d{6}$",
+        "example": "123456",
+        "description": "6-digit numeric login passcode."
+      },
+      "TransactionPin": {
+        "type": "string",
+        "pattern": "^\\d{4}$",
+        "example": "1234",
+        "description": "4-digit numeric transaction PIN."
+      },
+      "UniversalPaymentPin": {
+        "type": "string",
+        "pattern": "^\\d{6}$",
+        "example": "654321",
+        "description": "6-digit Universal Payment PIN (UPP). Used to authorise payments via Universal ID on foreign devices."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid authentication token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required. Please log in." } }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but not authorised for this action.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "FORBIDDEN", "message": "You do not have permission to perform this action." } }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Request validation failed.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "Phone must be a valid Nigerian number in E.164 format (+234XXXXXXXXXX)" } }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too many requests.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "RATE_LIMITED", "message": "Too many requests. Please wait before trying again." } }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "NOT_FOUND", "message": "Not found." } }
+          }
+        }
+      }
+    }
+  },
   "paths": {
     "/auth/initiate": {
       "post": {
         "tags": ["Registration"],
-        "summary": "Initiate registration",
-        "parameters": [
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
+        "operationId": "initiateRegistration",
+        "summary": "Step 1 — Initiate registration",
+        "description": "Provide a phone number or email address. An OTP is queued for delivery to that channel. The `registration_id` returned is used in all subsequent registration steps.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/InitiateRegistrationRequest" }
+              "schema": {
+                "type": "object",
+                "required": ["contact", "contact_type"],
+                "properties": {
+                  "contact": {
+                    "oneOf": [
+                      { "$ref": "#/components/schemas/PhoneNumber" },
+                      { "type": "string", "format": "email", "example": "user@example.com" }
+                    ],
+                    "description": "Phone number (E.164) if contact_type is phone, or email address if contact_type is email."
+                  },
+                  "contact_type": { "$ref": "#/components/schemas/ContactType" }
+                }
+              },
+              "examples": {
+                "phone": {
+                  "summary": "Register with phone",
+                  "value": { "contact": "+2348012345678", "contact_type": "phone" }
+                },
+                "email": {
+                  "summary": "Register with email",
+                  "value": { "contact": "kingsley@example.com", "contact_type": "email" }
+                }
+              }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "OTP initiated",
+          "201": {
+            "description": "OTP queued. Proceed to Step 2.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "registration_id": { "type": "string", "format": "uuid", "description": "Pass this in all subsequent registration steps." },
+                            "contact_type": { "$ref": "#/components/schemas/ContactType" },
+                            "otp_expires_at": { "type": "string", "format": "date-time", "description": "OTP expires at this time. Request a resend before this if not received." },
+                            "message": { "type": "string", "example": "A verification code has been sent to your phone." }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
               }
             }
-          }
+          },
+          "409": {
+            "description": "Phone or email already registered.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "phone": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "PHONE_ALREADY_REGISTERED", "message": "An account with this phone number already exists." } } },
+                  "email": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "EMAIL_ALREADY_REGISTERED", "message": "An account with this email address already exists." } } }
+                }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
-
     "/auth/verify-otp": {
       "post": {
         "tags": ["Registration"],
-        "summary": "Verify OTP",
-        "parameters": [
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
+        "operationId": "verifyRegistrationOtp",
+        "summary": "Step 2 — Verify OTP",
+        "description": "Submit the OTP received via phone or email. On success, the registration session moves to `otp_verified` state. Proceed to Step 3.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/VerifyOtpRequest" }
+              "schema": {
+                "type": "object",
+                "required": ["registration_id", "otp", "contact_type"],
+                "properties": {
+                  "registration_id": { "type": "string", "format": "uuid", "description": "Returned by POST /auth/initiate." },
+                  "otp": { "type": "string", "pattern": "^\\d{6}$", "example": "123456" },
+                  "contact_type": { "$ref": "#/components/schemas/ContactType" }
+                }
+              }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "OTP verified",
+            "description": "OTP verified. Proceed to Step 3 (check username) or Step 4 (complete).",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "verified": { "type": "boolean", "example": true }, "message": { "type": "string", "example": "OTP verified. You can now complete your registration." } } } } }
+                  ]
+                }
               }
             }
-          }
+          },
+          "400": {
+            "description": "OTP invalid, expired, or max attempts exceeded.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "invalid": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "OTP_INVALID", "message": "The code you entered is incorrect." } } },
+                  "expired": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "OTP_EXPIRED", "message": "This code has expired. Please request a new one." } } },
+                  "max_attempts": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "OTP_MAX_ATTEMPTS_EXCEEDED", "message": "Too many incorrect attempts. Please request a new code." } } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
-
+    "/auth/resend-otp": {
+      "post": {
+        "tags": ["Registration"],
+        "operationId": "resendRegistrationOtp",
+        "summary": "Step 2b — Resend OTP",
+        "description": "Request a new OTP. The previous OTP is invalidated immediately. Rate limited to 3 resends per 30-minute window.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["registration_id", "contact_type"],
+                "properties": {
+                  "registration_id": { "type": "string", "format": "uuid" },
+                  "contact_type": { "$ref": "#/components/schemas/ContactType" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New OTP queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "expires_at": { "type": "string", "format": "date-time" }, "message": { "type": "string", "example": "A new verification code has been sent." } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resend limit reached.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "OTP_RESEND_LIMIT_EXCEEDED", "message": "Too many resend attempts. Please wait before trying again." } }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
     "/auth/check-username": {
       "get": {
         "tags": ["Registration"],
-        "summary": "Check username availability",
+        "operationId": "checkUsername",
+        "summary": "Step 3 — Check username availability",
+        "description": "Real-time username availability check. Call on every keystroke with debounce. Username rules: 5–30 characters, alphanumeric and underscore only, case-insensitive uniqueness.",
         "parameters": [
           {
             "name": "username",
             "in": "query",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": { "type": "string", "minLength": 5, "maxLength": 30, "pattern": "^[a-zA-Z0-9_]{5,30}$" },
+            "example": "kingsley_kt"
           }
         ],
         "responses": {
           "200": {
-            "description": "Username status",
+            "description": "Availability result.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "username": { "type": "string", "example": "kingsley_kt", "description": "Normalised to lowercase." },
+                            "available": { "type": "boolean" },
+                            "message": { "type": "string", "example": "Username is available." }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "examples": {
+                  "available": { "value": { "success": true, "data": { "username": "kingsley_kt", "available": true, "message": "Username is available." }, "meta": null, "error": null } },
+                  "taken": { "value": { "success": true, "data": { "username": "kingsley_kt", "available": false, "message": "Username is already taken." }, "meta": null, "error": null } }
+                }
               }
             }
-          }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
         }
       }
     },
-
     "/auth/complete": {
       "post": {
         "tags": ["Registration"],
-        "summary": "Complete registration",
-        "parameters": [
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
+        "operationId": "completeRegistration",
+        "summary": "Step 4 — Complete registration",
+        "description": "Final registration step. Submit username and 6-digit passcode. On success, the account is activated, a wallet is created, a Universal ID is assigned, and tokens are issued.\n\n**Universal ID** is auto-generated in the format `WORD-XX-NNNN` (e.g. `BOLT-KP-4821`). The user can view it in their profile and revoke/regenerate it once per 24 hours.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CompleteRegistrationRequest" }
+              "schema": {
+                "type": "object",
+                "required": ["registration_id", "username", "login_passcode", "device_id", "fcm_token"],
+                "properties": {
+                  "registration_id": { "type": "string", "format": "uuid", "description": "Returned by POST /auth/initiate." },
+                  "username": { "type": "string", "minLength": 5, "maxLength": 30, "pattern": "^[a-zA-Z0-9_]{5,30}$", "example": "kingsley_kt" },
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "device_id": { "type": "string", "description": "Stable client-generated device identifier. Stored on the session.", "example": "iphone-uuid-abc123" },
+                  "fcm_token": { "type": "string", "description": "Firebase Cloud Messaging token for push notifications.", "example": "fcm-token-xyz" }
+                }
+              }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "Account created",
+          "201": {
+            "description": "Account activated. Tokens issued.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "tokens": { "$ref": "#/components/schemas/AuthTokens" },
+                            "user": { "$ref": "#/components/schemas/UserProfile" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
               }
             }
-          }
+          },
+          "409": {
+            "description": "Username taken or OTP not yet verified.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "username_taken": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This username is already taken. Please choose another." } } },
+                  "otp_not_verified": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "Please verify your OTP before completing registration." } } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
         }
       }
     },
-
     "/auth/login": {
       "post": {
-        "tags": ["Auth"],
-        "summary": "Login user",
-        "parameters": [
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
+        "tags": ["Session"],
+        "operationId": "login",
+        "summary": "Login",
+        "description": "Authenticate with phone or email + 6-digit passcode. Returns a token pair.\n\n**Lockout policy:**\n- 5 failed attempts → 15-minute lock\n- 10 failed attempts → 1-hour lock\n- 15 failed attempts → 24-hour lock\n- 3 lockout events → permanent hard lock (contact support)",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+              "schema": {
+                "type": "object",
+                "required": ["contact", "contact_type", "login_passcode", "device_id", "fcm_token"],
+                "properties": {
+                  "contact": { "description": "Phone or email matching contact_type.", "example": "+2348012345678" },
+                  "contact_type": { "$ref": "#/components/schemas/ContactType" },
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "device_id": { "type": "string", "example": "iphone-uuid-abc123" },
+                  "fcm_token": { "type": "string", "example": "fcm-token-xyz" }
+                }
+              },
+              "examples": {
+                "phone": { "summary": "Phone login", "value": { "contact": "+2348012345678", "contact_type": "phone", "login_passcode": "123456", "device_id": "device-001", "fcm_token": "fcm-xyz" } },
+                "email": { "summary": "Email login", "value": { "contact": "user@example.com", "contact_type": "email", "login_passcode": "123456", "device_id": "device-001", "fcm_token": "fcm-xyz" } }
+              }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Login successful",
+            "description": "Login successful.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "tokens": { "$ref": "#/components/schemas/AuthTokens" }, "user": { "$ref": "#/components/schemas/UserProfile" } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials or account locked.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "invalid": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "INVALID_CREDENTIALS", "message": "Incorrect credentials." } } },
+                  "locked": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "PASSCODE_LOCKED", "message": "Your account is temporarily locked. Try again in 15 minutes." } } }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Account frozen.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "ACCOUNT_FROZEN", "message": "Your account has been frozen. Please contact support." } }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["Session"],
+        "operationId": "refreshToken",
+        "summary": "Refresh tokens",
+        "description": "Exchange a refresh token for a new access + refresh token pair. The submitted refresh token is immediately invalidated (rotation). If a revoked token is submitted, the entire session family is revoked (reuse detection).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["refresh_token", "device_id"],
+                "properties": {
+                  "refresh_token": { "type": "string" },
+                  "device_id": { "type": "string", "example": "iphone-uuid-abc123" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New token pair issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/AuthTokens" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Refresh token invalid, expired, or reuse detected.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "not_found": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "SESSION_NOT_FOUND", "message": "Session not found. Please log in again." } } },
+                  "revoked": { "value": { "success": false, "data": null, "meta": null, "error": { "code": "SESSION_REVOKED", "message": "This session has been revoked. Please log in again." } } }
+                }
               }
             }
           }
         }
       }
     },
-
+    "/auth/logout": {
+      "post": {
+        "tags": ["Session"],
+        "operationId": "logout",
+        "summary": "Logout (current device)",
+        "description": "Revoke the current session's refresh token. The access token remains valid until its 15-minute TTL expires — the client should discard it immediately.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["refresh_token"],
+                "properties": {
+                  "refresh_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "logged_out": { "type": "boolean", "example": true } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/auth/logout-all": {
+      "post": {
+        "tags": ["Session"],
+        "operationId": "logoutAll",
+        "summary": "Logout (all devices)",
+        "description": "Revoke all active sessions for this user across all devices.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "All sessions revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "sessions_revoked": { "type": "integer", "example": 3 } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
     "/auth/me": {
       "get": {
-        "tags": ["Auth"],
-        "summary": "Get current user",
+        "tags": ["Session"],
+        "operationId": "getMe",
+        "summary": "Get current user profile",
+        "security": [{ "BearerAuth": [] }],
         "responses": {
           "200": {
-            "description": "User profile",
+            "description": "Current user profile.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ApiResponse" }
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/UserProfile" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/passcode/change": {
+      "post": {
+        "tags": ["Passcode"],
+        "operationId": "changePasscode",
+        "summary": "Change login passcode",
+        "description": "Change the 6-digit login passcode. Requires the current passcode. On success, all other sessions are revoked — the user stays logged in on the current device only.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_passcode", "new_passcode"],
+                "properties": {
+                  "current_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "new_passcode": { "$ref": "#/components/schemas/LoginPasscode", "description": "Must differ from current_passcode." }
+                }
               }
             }
           }
-        }
-      }
-    },
-
-    "/health": {
-      "get": {
-        "tags": ["Health"],
-        "summary": "Health check",
+        },
         "responses": {
           "200": {
-            "description": "Service healthy"
-          }
+            "description": "Passcode changed. Other sessions revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "sessions_revoked": { "type": "integer", "example": 2 } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Current passcode incorrect.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "INVALID_CREDENTIALS", "message": "Current passcode is incorrect." } }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
         }
       }
-    }
-  },
-
-  "components": {
-    "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
-      }
     },
-
-    "parameters": {
-      "IdempotencyKey": {
-        "name": "Idempotency-Key",
-        "in": "header",
-        "required": false,
-        "schema": {
-          "type": "string",
-          "example": "uuid-v4"
+    "/settings/passcode/forgot": {
+      "post": {
+        "tags": ["Passcode"],
+        "operationId": "forgotPasscode",
+        "summary": "Initiate passcode recovery",
+        "description": "Request a recovery OTP sent to the user's registered phone or email. Returns a `reset_token` valid for 15 minutes.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["contact", "contact_type"],
+                "properties": {
+                  "contact": { "type": "string", "example": "+2348012345678" },
+                  "contact_type": { "$ref": "#/components/schemas/ContactType" }
+                }
+              }
+            }
+          }
         },
-        "description": "Ensures safe retries for POST requests"
+        "responses": {
+          "200": {
+            "description": "Recovery OTP queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "reset_token": { "type": "string", "description": "Pass to POST /settings/passcode/reset." }, "expires_at": { "type": "string", "format": "date-time" } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
       }
     },
-
-    "schemas": {
-      "ApiResponse": {
-        "type": "object",
-        "required": ["success"],
-        "properties": {
-          "success": { "type": "boolean" },
-          "data": { "nullable": true },
-          "error": {
-            "oneOf": [
-              { "$ref": "#/components/schemas/ApiError" },
-              { "type": "null" }
-            ]
+    "/settings/passcode/reset": {
+      "post": {
+        "tags": ["Passcode"],
+        "operationId": "resetPasscode",
+        "summary": "Complete passcode reset",
+        "description": "Submit the reset_token + OTP + new passcode. All existing sessions are revoked. A new session is issued for the current device.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["reset_token", "otp", "new_passcode", "device_id", "fcm_token"],
+                "properties": {
+                  "reset_token": { "type": "string" },
+                  "otp": { "type": "string", "pattern": "^\\d{6}$" },
+                  "new_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "device_id": { "type": "string" },
+                  "fcm_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Passcode reset. New tokens issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "tokens": { "$ref": "#/components/schemas/AuthTokens" } } } } }
+                  ]
+                }
+              }
+            }
           },
-          "meta": {
-            "type": "object",
-            "nullable": true
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
+    "/settings/pin/set": {
+      "post": {
+        "tags": ["Transaction PIN"],
+        "operationId": "setTransactionPin",
+        "summary": "Set transaction PIN",
+        "description": "Set a 4-digit transaction PIN. Requires login passcode confirmation. The PIN is required for all internal transfers and bill payments.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["login_passcode", "transaction_pin"],
+                "properties": {
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "transaction_pin": { "$ref": "#/components/schemas/TransactionPin" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PIN set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "pin_set": { "type": "boolean", "example": true } } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "PIN already set.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "Transaction PIN is already set. Use change PIN to update it." } } } }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
+    "/settings/pin/change": {
+      "post": {
+        "tags": ["Transaction PIN"],
+        "operationId": "changeTransactionPin",
+        "summary": "Change transaction PIN",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_pin", "new_pin"],
+                "properties": {
+                  "current_pin": { "$ref": "#/components/schemas/TransactionPin" },
+                  "new_pin": { "$ref": "#/components/schemas/TransactionPin", "description": "Must differ from current_pin." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PIN changed.",
+            "content": { "application/json": { "schema": { "allOf": [ { "$ref": "#/components/schemas/SuccessResponse" }, { "properties": { "data": { "type": "object", "properties": { "changed": { "type": "boolean", "example": true } } } } } ] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
+    "/settings/pin": {
+      "delete": {
+        "tags": ["Transaction PIN"],
+        "operationId": "deleteTransactionPin",
+        "summary": "Remove transaction PIN",
+        "description": "Remove the transaction PIN. Requires login passcode confirmation.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["login_passcode"],
+                "properties": {
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PIN removed.",
+            "content": { "application/json": { "schema": { "allOf": [ { "$ref": "#/components/schemas/SuccessResponse" }, { "properties": { "data": { "type": "object", "properties": { "deleted": { "type": "boolean", "example": true } } } } } ] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/upp/set": {
+      "post": {
+        "tags": ["Universal Payment PIN"],
+        "operationId": "setUpp",
+        "summary": "Set Universal Payment PIN",
+        "description": "Set a 6-digit UPP. Requires login passcode confirmation. The UPP authorises payments made using the Universal ID on a foreign device.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["login_passcode", "upp"],
+                "properties": {
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" },
+                  "upp": { "$ref": "#/components/schemas/UniversalPaymentPin" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "UPP set.",
+            "content": { "application/json": { "schema": { "allOf": [ { "$ref": "#/components/schemas/SuccessResponse" }, { "properties": { "data": { "type": "object", "properties": { "upp_set": { "type": "boolean", "example": true } } } } } ] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "UPP already set.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
+    "/settings/upp/change": {
+      "post": {
+        "tags": ["Universal Payment PIN"],
+        "operationId": "changeUpp",
+        "summary": "Change Universal Payment PIN",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_upp", "new_upp"],
+                "properties": {
+                  "current_upp": { "$ref": "#/components/schemas/UniversalPaymentPin" },
+                  "new_upp": { "$ref": "#/components/schemas/UniversalPaymentPin", "description": "Must differ from current_upp." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "UPP changed.",
+            "content": { "application/json": { "schema": { "allOf": [ { "$ref": "#/components/schemas/SuccessResponse" }, { "properties": { "data": { "type": "object", "properties": { "changed": { "type": "boolean", "example": true } } } } } ] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" }
+        }
+      }
+    },
+    "/settings/universal-id/revoke": {
+      "post": {
+        "tags": ["Universal ID"],
+        "operationId": "revokeUniversalId",
+        "summary": "Revoke and regenerate Universal ID",
+        "description": "Revoke the current Universal ID and receive a new one. The old ID is permanently retired and can never be reassigned. Rate limited to once per 24 hours. Requires login passcode confirmation.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["login_passcode"],
+                "properties": {
+                  "login_passcode": { "$ref": "#/components/schemas/LoginPasscode" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Universal ID revoked. New one issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "new_universal_id": { "type": "string", "example": "APEX-RZ-0034", "description": "Format: WORD-XX-NNNN" },
+                            "next_revocation_allowed_at": { "type": "string", "format": "date-time", "description": "Earliest time the user can revoke again." }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": {
+            "description": "24-hour cooldown not elapsed.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "RATE_LIMITED", "message": "You can only revoke your Universal ID once every 24 hours." } } } }
           }
         }
-      },
-
-      "ApiError": {
-        "type": "object",
-        "required": ["code", "message"],
-        "properties": {
-          "code": {
-            "type": "string",
-            "example": "VALIDATION_ERROR"
+      }
+    },
+    "/settings/sessions": {
+      "get": {
+        "tags": ["Sessions"],
+        "operationId": "listSessions",
+        "summary": "List active sessions",
+        "description": "Returns all active sessions for the current user. The current session is marked with `is_current: true`.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Active sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Session" } } } }
+                  ]
+                }
+              }
+            }
           },
-          "message": {
-            "type": "string",
-            "example": "Invalid request payload"
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/sessions/{id}": {
+      "delete": {
+        "tags": ["Sessions"],
+        "operationId": "revokeSession",
+        "summary": "Revoke a specific session",
+        "description": "Revoke any active session by ID except the current one. Use POST /auth/logout to revoke the current session.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session revoked.",
+            "content": { "application/json": { "schema": { "allOf": [ { "$ref": "#/components/schemas/SuccessResponse" }, { "properties": { "data": { "type": "object", "properties": { "revoked": { "type": "boolean", "example": true } } } } } ] } } }
           },
-          "details": {
-            "type": "object",
-            "nullable": true
-          }
-        }
-      },
-
-      "PaginationMeta": {
-        "type": "object",
-        "properties": {
-          "page": { "type": "integer", "example": 1 },
-          "limit": { "type": "integer", "example": 20 },
-          "total": { "type": "integer", "example": 100 },
-          "has_next": { "type": "boolean" }
-        }
-      },
-
-      "InitiateRegistrationRequest": {
-        "type": "object",
-        "required": ["contact", "contact_type"],
-        "properties": {
-          "contact": { "type": "string" },
-          "contact_type": {
-            "type": "string",
-            "enum": ["phone", "email"]
-          }
-        }
-      },
-
-      "VerifyOtpRequest": {
-        "type": "object",
-        "required": ["registration_id", "otp", "contact_type"],
-        "properties": {
-          "registration_id": { "type": "string" },
-          "otp": { "type": "string" },
-          "contact_type": { "type": "string", "enum": ["phone", "email"] }
-        }
-      },
-
-      "CompleteRegistrationRequest": {
-        "type": "object",
-        "required": ["registration_id", "username", "login_passcode"],
-        "properties": {
-          "registration_id": { "type": "string" },
-          "username": { "type": "string" },
-          "login_passcode": { "type": "string" },
-          "device_id": { "type": "string" },
-          "fcm_token": { "type": "string" }
-        }
-      },
-
-      "LoginRequest": {
-        "type": "object",
-        "required": ["contact", "contact_type", "login_passcode"],
-        "properties": {
-          "contact": { "type": "string" },
-          "contact_type": { "type": "string", "enum": ["phone", "email"] },
-          "login_passcode": { "type": "string" },
-          "device_id": { "type": "string" },
-          "fcm_token": { "type": "string" }
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Cannot revoke current session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
     }
