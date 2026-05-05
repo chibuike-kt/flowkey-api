@@ -3,6 +3,7 @@ import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
 import { verifyBvn, verifyNin, verifyAddress } from './prembly.provider';
+import { queueKycResultEmail } from '../../queues/email.queue';
 import {
   TIER_LIMITS,
   type KycTier,
@@ -11,11 +12,12 @@ import {
   type UpgradeKycPayload,
 } from './kyc.types';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
-
+// ---------------------------------------------------------------------------
 // Helpers
-
+// ---------------------------------------------------------------------------
 
 function cooldownHours(targetTier: KycTier): number {
   const cfg = config();
@@ -27,12 +29,12 @@ function cooldownUntil(targetTier: KycTier): Date {
   return new Date(Date.now() + ms);
 }
 
-
+// ---------------------------------------------------------------------------
 // GET /kyc/status
-
+// ---------------------------------------------------------------------------
 
 export async function getKycStatus(userId: string): Promise<KycStatusResult> {
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const user = await db.user.findUniqueOrThrow({
     where: { id: userId },
     select: { kyc_tier: true },
@@ -41,7 +43,7 @@ export async function getKycStatus(userId: string): Promise<KycStatusResult> {
   const tier = (user as { kyc_tier: number }).kyc_tier as KycTier;
 
   // Most recent attempt (any tier)
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const lastAttempt = await db.kycAttempt.findFirst({
     where: { user_id: userId },
     orderBy: { created_at: 'desc' },
@@ -91,16 +93,16 @@ export async function getKycStatus(userId: string): Promise<KycStatusResult> {
   };
 }
 
-
+// ---------------------------------------------------------------------------
 // POST /kyc/upgrade
-
+// ---------------------------------------------------------------------------
 
 export async function upgradeKyc(
   userId: string,
   payload: UpgradeKycPayload,
 ): Promise<{ attempt_id: string; status: string; new_tier: KycTier | null }> {
   // 1. Load current tier
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const user = await db.user.findUniqueOrThrow({
     where: { id: userId },
     select: { kyc_tier: true },
@@ -122,7 +124,7 @@ export async function upgradeKyc(
   }
 
   // 4. Cooldown check — look at the most recent attempt for this target tier
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const recentAttempt = await db.kycAttempt.findFirst({
     where: { user_id: userId, tier_target: targetTier, status: { in: ['failed', 'error'] } },
     orderBy: { created_at: 'desc' },
@@ -138,7 +140,7 @@ export async function upgradeKyc(
   }
 
   // 5. Create attempt record (pending)
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const attempt = await db.kycAttempt.create({
     data: { user_id: userId, tier_target: targetTier, status: 'pending' },
     select: { id: true },
@@ -163,7 +165,8 @@ export async function upgradeKyc(
   } catch (err) {
     // Service errors (EXTERNAL_SERVICE_ERROR etc.) propagate up
     // Mark attempt as error if we haven't already
-      await db.kycAttempt.updateMany({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    await db.kycAttempt.updateMany({
       where: { id: attemptId, status: 'pending' },
       data: {
         status: 'error',
@@ -173,13 +176,39 @@ export async function upgradeKyc(
     throw err;
   }
 
-  // 7. Read final attempt status
-
+  // 7. Read final attempt status + user info for notification
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const finalAttempt = await db.kycAttempt.findUniqueOrThrow({
     where: { id: attemptId },
-    select: { status: true },
+    select: { status: true, failure_reason: true },
   });
-  const finalStatus = (finalAttempt as { status: string }).status;
+  const finalStatus = (finalAttempt as { status: string; failure_reason: string | null }).status;
+  const failureReason = (finalAttempt as { status: string; failure_reason: string | null })
+    .failure_reason;
+
+  // 8. Queue KYC result notification — fire and forget
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const notifyUser = await db.user.findUnique({
+    where: { id: userId },
+    select: { email: true, phone: true, username: true },
+  });
+  const nu = notifyUser as {
+    email: string | null;
+    phone: string | null;
+    username: string | null;
+  } | null;
+  if (nu?.email && nu.username) {
+    void queueKycResultEmail(
+      nu.email,
+      nu.username,
+      attemptId,
+      targetTier,
+      finalStatus === 'passed',
+      failureReason ?? undefined,
+    ).catch((err) =>
+      logger.error('Failed to queue KYC result email', { error: (err as Error).message }),
+    );
+  }
 
   return {
     attempt_id: attemptId,
@@ -188,9 +217,9 @@ export async function upgradeKyc(
   };
 }
 
-
+// ---------------------------------------------------------------------------
 // Internal — Tier 2 processing (BVN + NIN, both must pass)
-
+// ---------------------------------------------------------------------------
 
 async function processTier2(
   userId: string,
@@ -242,9 +271,9 @@ async function processTier2(
   });
 }
 
-
+// ---------------------------------------------------------------------------
 // Internal — Tier 3 processing (Address + utility bill)
-
+// ---------------------------------------------------------------------------
 
 async function processTier3(
   userId: string,
@@ -285,9 +314,9 @@ async function processTier3(
   });
 }
 
-
+// ---------------------------------------------------------------------------
 // Internal — record pass, upgrade tier
-
+// ---------------------------------------------------------------------------
 
 async function passAttempt(
   userId: string,
@@ -295,16 +324,20 @@ async function passAttempt(
   newTier: KycTier,
   metadata: Record<string, unknown>,
 ): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.$transaction([
-      db.kycAttempt.update({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    db.kycAttempt.update({
       where: { id: attemptId },
       data: { status: 'passed', metadata, cooldown_until: null },
     }),
-      db.user.update({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    db.user.update({
       where: { id: userId },
       data: { kyc_tier: newTier },
     }),
-      db.auditLog.create({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    db.auditLog.create({
       data: {
         actor_id: userId,
         actor_type: 'user',
@@ -318,11 +351,12 @@ async function passAttempt(
   ]);
 }
 
-
+// ---------------------------------------------------------------------------
 // Internal — record fail, set cooldown
-
+// ---------------------------------------------------------------------------
 
 async function failAttempt(attemptId: string, reason: string, targetTier: KycTier): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.kycAttempt.update({
     where: { id: attemptId },
     data: {
@@ -333,16 +367,16 @@ async function failAttempt(attemptId: string, reason: string, targetTier: KycTie
   });
 }
 
-
+// ---------------------------------------------------------------------------
 // GET /kyc/attempts (paginated)
-
+// ---------------------------------------------------------------------------
 
 export async function listKycAttempts(
   userId: string,
   cursor?: string,
   limit = 20,
 ): Promise<{ attempts: KycAttemptSummary[]; next_cursor: string | null }> {
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const rows = await db.kycAttempt.findMany({
     where: { user_id: userId },
     orderBy: { created_at: 'desc' },

@@ -1,0 +1,605 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey KYC API",
+    "version": "1.0.0",
+    "description": "KYC (Know Your Customer) identity verification API for FlowKey.\n\n## Tier Structure\n\n| Tier | Requirement | Status |\n|------|-------------|--------|\n| Tier 1 | Default — all registered users | No action required |\n| Tier 2 | BVN + NIN (joint submission) | User-initiated |\n| Tier 3 | Address + utility bill | User-initiated |\n\n## Transfer Limits Per Tier\n\n| Channel | Tier 1 | Tier 2 | Tier 3 |\n|---------|--------|--------|--------|\n| FlowKey → FlowKey | ₦50,000 | ₦1,000,000 | ₦5,000,000 |\n| FlowKey → Bank | ₦50,000 | ₦1,000,000 | ₦5,000,000 |\n| Airtime | ₦50,000 | ₦200,000 | ₦200,000 |\n| Other Bills | ₦500,000 | ₦1,000,000 | ₦1,000,000 |\n\nAll limit values are in kobo (integer). Divide by 100 to get naira.\n\n## Upgrade Rules\n- Upgrades are sequential — must hold Tier N before applying for Tier N+1\n- Tier 2 requires BVN and NIN submitted together in a single request\n- Both BVN and NIN must pass Prembly verification for Tier 2 to be granted\n- Failed attempts trigger a cooldown: 24h for Tier 2, 48h for Tier 3\n- On pass, transfer limits are raised immediately\n- A KYC result email is queued after every attempt (pass or fail)\n\n## Response Envelope\nAll responses follow:\n```json\n{\n  \"success\": true,\n  \"data\": {},\n  \"meta\": null,\n  \"error\": null\n}\n```"
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://flowkey-api.onrender.com/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "KYC", "description": "Identity verification — status, upgrade, and attempt history" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "RS256 JWT. Obtain from POST /auth/complete or POST /auth/login."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Same key + same body returns original response. Same key + different body returns 422.",
+        "example": "550e8400-e29b-41d4-a716-446655440000"
+      },
+      "CursorParam": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "Pagination cursor. Pass the `next_cursor` from the previous response."
+      },
+      "LimitParam": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
+        "description": "Number of records to return. Maximum 50."
+      }
+    },
+    "schemas": {
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success", "data", "meta", "error"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data": { "type": "object", "nullable": true },
+          "meta": { "type": "object", "nullable": true },
+          "error": { "type": "object", "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["success", "data", "meta", "error"],
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data": { "nullable": true, "example": null },
+          "meta": { "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      },
+      "KycTier": {
+        "type": "integer",
+        "enum": [1, 2, 3],
+        "description": "KYC tier. Tier 1 is default for all registered users. Tiers 2 and 3 require verification."
+      },
+      "TierLimits": {
+        "type": "object",
+        "description": "Per-channel daily transfer limits for the user's current tier. All values in kobo.",
+        "properties": {
+          "flowkey_to_flowkey_kobo": {
+            "type": "string",
+            "description": "Daily limit for FlowKey-to-FlowKey transfers in kobo.",
+            "examples": ["5000000", "100000000", "500000000"]
+          },
+          "flowkey_to_bank_kobo": {
+            "type": "string",
+            "description": "Daily limit for FlowKey-to-bank withdrawals in kobo.",
+            "examples": ["5000000", "100000000", "500000000"]
+          },
+          "airtime_kobo": {
+            "type": "string",
+            "description": "Daily limit for airtime purchases in kobo.",
+            "examples": ["5000000", "20000000"]
+          },
+          "other_bills_kobo": {
+            "type": "string",
+            "description": "Daily limit for other bill payments (data, cable, utilities) in kobo.",
+            "examples": ["50000000", "100000000"]
+          }
+        }
+      },
+      "KycAttempt": {
+        "type": "object",
+        "description": "A single KYC verification attempt.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "tier_target": { "$ref": "#/components/schemas/KycTier" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "passed", "failed", "error"],
+            "description": "pending — verification in progress. passed — tier granted. failed — identity check failed (cooldown applied). error — provider unavailable."
+          },
+          "failure_reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-readable reason for failure. Null on pass.",
+            "example": "BVN verification failed. Please check your BVN and try again."
+          },
+          "is_admin_override": {
+            "type": "boolean",
+            "description": "True if an admin manually approved or rejected this attempt.",
+            "example": false
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "KycStatus": {
+        "type": "object",
+        "description": "Current KYC status and limits for the authenticated user.",
+        "properties": {
+          "current_tier": { "$ref": "#/components/schemas/KycTier" },
+          "limits": { "$ref": "#/components/schemas/TierLimits" },
+          "last_attempt": {
+            "allOf": [{ "$ref": "#/components/schemas/KycAttempt" }],
+            "nullable": true,
+            "description": "Most recent KYC attempt regardless of tier. Null if no attempt has been made."
+          },
+          "next_attempt_allowed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Earliest time the user can retry. Null if no cooldown is active."
+          }
+        }
+      },
+      "UpgradeTier2Request": {
+        "type": "object",
+        "required": ["target_tier", "bvn", "nin"],
+        "properties": {
+          "target_tier": { "type": "integer", "enum": [2] },
+          "bvn": {
+            "type": "string",
+            "pattern": "^\\d{11}$",
+            "description": "11-digit Bank Verification Number.",
+            "example": "12345678901"
+          },
+          "nin": {
+            "type": "string",
+            "pattern": "^\\d{11}$",
+            "description": "11-digit National Identification Number.",
+            "example": "98765432100"
+          }
+        }
+      },
+      "UpgradeTier3Request": {
+        "type": "object",
+        "required": ["target_tier", "address_line", "utility_bill_reference"],
+        "properties": {
+          "target_tier": { "type": "integer", "enum": [3] },
+          "address_line": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 500,
+            "description": "Full residential address.",
+            "example": "12 Admiralty Way, Lekki Phase 1, Lagos"
+          },
+          "utility_bill_reference": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Reference ID from client-side Prembly document upload. The client uploads the utility bill directly to Prembly and passes back the reference ID.",
+            "example": "prembly-ref-abc123xyz"
+          }
+        }
+      },
+      "UpgradeKycResponse": {
+        "type": "object",
+        "description": "Result of a KYC upgrade attempt.",
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "ID of the KYC attempt record created."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["passed", "failed", "error"],
+            "description": "passed — tier upgraded. failed — identity check failed, cooldown applied. error — provider unavailable."
+          },
+          "new_tier": {
+            "allOf": [{ "$ref": "#/components/schemas/KycTier" }],
+            "nullable": true,
+            "description": "The tier the user is now on. Null if the attempt did not pass."
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required. Please log in." } }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Request body failed validation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "BVN must be exactly 11 digits" } }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Cooldown period is active.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "RATE_LIMITED", "message": "You must wait until 2026-05-07T10:00:00.000Z before retrying Tier 2 verification." } }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "Prembly verification provider is unavailable (production only). In development, requests succeed via stub.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "EXTERNAL_SERVICE_ERROR", "message": "Verification service is temporarily unavailable. Please try again later." } }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/kyc/status": {
+      "get": {
+        "tags": ["KYC"],
+        "operationId": "getKycStatus",
+        "summary": "Get KYC status",
+        "description": "Returns the authenticated user's current KYC tier, per-channel transfer limits, most recent attempt, and cooldown expiry if one is active.\n\nCall this on app load to determine which features to enable and which limits to display to the user.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "KYC status retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/KycStatus" }
+                      }
+                    }
+                  ]
+                },
+                "examples": {
+                  "tier1_no_attempts": {
+                    "summary": "New user — Tier 1, no attempts",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "current_tier": 1,
+                        "limits": {
+                          "flowkey_to_flowkey_kobo": "5000000",
+                          "flowkey_to_bank_kobo": "5000000",
+                          "airtime_kobo": "5000000",
+                          "other_bills_kobo": "50000000"
+                        },
+                        "last_attempt": null,
+                        "next_attempt_allowed_at": null
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "tier1_with_cooldown": {
+                    "summary": "Tier 1 — failed Tier 2 attempt, in cooldown",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "current_tier": 1,
+                        "limits": {
+                          "flowkey_to_flowkey_kobo": "5000000",
+                          "flowkey_to_bank_kobo": "5000000",
+                          "airtime_kobo": "5000000",
+                          "other_bills_kobo": "50000000"
+                        },
+                        "last_attempt": {
+                          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                          "tier_target": 2,
+                          "status": "failed",
+                          "failure_reason": "BVN verification failed. Please check your BVN and try again.",
+                          "is_admin_override": false,
+                          "created_at": "2026-05-06T08:00:00.000Z",
+                          "updated_at": "2026-05-06T08:00:05.000Z"
+                        },
+                        "next_attempt_allowed_at": "2026-05-07T08:00:05.000Z"
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "tier2_active": {
+                    "summary": "Tier 2 verified",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "current_tier": 2,
+                        "limits": {
+                          "flowkey_to_flowkey_kobo": "100000000",
+                          "flowkey_to_bank_kobo": "100000000",
+                          "airtime_kobo": "20000000",
+                          "other_bills_kobo": "100000000"
+                        },
+                        "last_attempt": {
+                          "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                          "tier_target": 2,
+                          "status": "passed",
+                          "failure_reason": null,
+                          "is_admin_override": false,
+                          "created_at": "2026-05-05T12:00:00.000Z",
+                          "updated_at": "2026-05-05T12:00:08.000Z"
+                        },
+                        "next_attempt_allowed_at": null
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "tier3_active": {
+                    "summary": "Tier 3 verified",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "current_tier": 3,
+                        "limits": {
+                          "flowkey_to_flowkey_kobo": "500000000",
+                          "flowkey_to_bank_kobo": "500000000",
+                          "airtime_kobo": "20000000",
+                          "other_bills_kobo": "100000000"
+                        },
+                        "last_attempt": {
+                          "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                          "tier_target": 3,
+                          "status": "passed",
+                          "failure_reason": null,
+                          "is_admin_override": false,
+                          "created_at": "2026-05-04T09:00:00.000Z",
+                          "updated_at": "2026-05-04T09:00:12.000Z"
+                        },
+                        "next_attempt_allowed_at": null
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/kyc/upgrade": {
+      "post": {
+        "tags": ["KYC"],
+        "operationId": "upgradeKyc",
+        "summary": "Submit KYC upgrade",
+        "description": "Submit identity documents to upgrade to the next tier.\n\n**Tier 2 (BVN + NIN):**\n- BVN and NIN are verified independently via Prembly\n- Both must pass — if either fails, the attempt is recorded as failed and a 24-hour cooldown is applied\n- Do not store BVN or NIN on the client — submit directly to this endpoint\n\n**Tier 3 (Address + Utility Bill):**\n- The client uploads the utility bill image directly to Prembly and receives a `reference_id`\n- Pass that `reference_id` here as `utility_bill_reference`\n- A 48-hour cooldown is applied on failure\n\n**On success:**\n- User's tier is upgraded immediately\n- Transfer limits are raised immediately\n- A confirmation email is queued\n\n**On failure:**\n- Attempt is recorded with `failure_reason`\n- Cooldown applied: 24h (Tier 2), 48h (Tier 3)\n- A failure notification email is queued\n- The response still returns HTTP 200 — check `status` field",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/UpgradeTier2Request" },
+                  { "$ref": "#/components/schemas/UpgradeTier3Request" }
+                ],
+                "discriminator": {
+                  "propertyName": "target_tier",
+                  "mapping": {
+                    "2": "#/components/schemas/UpgradeTier2Request",
+                    "3": "#/components/schemas/UpgradeTier3Request"
+                  }
+                }
+              },
+              "examples": {
+                "tier2": {
+                  "summary": "Upgrade to Tier 2 (BVN + NIN)",
+                  "value": {
+                    "target_tier": 2,
+                    "bvn": "12345678901",
+                    "nin": "98765432100"
+                  }
+                },
+                "tier3": {
+                  "summary": "Upgrade to Tier 3 (Address + Utility Bill)",
+                  "value": {
+                    "target_tier": 3,
+                    "address_line": "12 Admiralty Way, Lekki Phase 1, Lagos",
+                    "utility_bill_reference": "prembly-ref-abc123xyz"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upgrade attempt processed. Check the `status` field — HTTP 200 is returned for both pass and fail outcomes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/UpgradeKycResponse" }
+                      }
+                    }
+                  ]
+                },
+                "examples": {
+                  "passed": {
+                    "summary": "Tier 2 — verification passed",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "attempt_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                        "status": "passed",
+                        "new_tier": 2
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "failed_bvn": {
+                    "summary": "Tier 2 — BVN check failed",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "attempt_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "status": "failed",
+                        "new_tier": null
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "passed_tier3": {
+                    "summary": "Tier 3 — address verification passed",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "attempt_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                        "status": "passed",
+                        "new_tier": 3
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "Sequential upgrade rule violated — user is not on the prerequisite tier.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "wrong_tier": {
+                    "summary": "Attempting Tier 3 while on Tier 1",
+                    "value": {
+                      "success": false,
+                      "data": null,
+                      "meta": null,
+                      "error": {
+                        "code": "CONFLICT",
+                        "message": "You must be on Tier 2 before upgrading to Tier 3. Your current tier is 1."
+                      }
+                    }
+                  },
+                  "already_at_tier": {
+                    "summary": "Already at target tier",
+                    "value": {
+                      "success": false,
+                      "data": null,
+                      "meta": null,
+                      "error": {
+                        "code": "CONFLICT",
+                        "message": "You are already on Tier 2."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/kyc/attempts": {
+      "get": {
+        "tags": ["KYC"],
+        "operationId": "listKycAttempts",
+        "summary": "List KYC attempt history",
+        "description": "Returns a paginated list of all KYC attempts for the authenticated user, ordered by most recent first. Includes both passed and failed attempts across all tiers.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CursorParam" },
+          { "$ref": "#/components/parameters/LimitParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attempt history retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/KycAttempt" }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "next_cursor": {
+                          "type": "string",
+                          "format": "uuid",
+                          "nullable": true,
+                          "description": "Pass as `cursor` in next request. Null when no more pages."
+                        },
+                        "limit": { "type": "integer", "example": 20 }
+                      }
+                    },
+                    "error": { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                      "tier_target": 2,
+                      "status": "passed",
+                      "failure_reason": null,
+                      "is_admin_override": false,
+                      "created_at": "2026-05-05T12:00:00.000Z",
+                      "updated_at": "2026-05-05T12:00:08.000Z"
+                    },
+                    {
+                      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                      "tier_target": 2,
+                      "status": "failed",
+                      "failure_reason": "BVN verification failed. Please check your BVN and try again.",
+                      "is_admin_override": false,
+                      "created_at": "2026-05-04T09:00:00.000Z",
+                      "updated_at": "2026-05-04T09:00:05.000Z"
+                    }
+                  ],
+                  "meta": {
+                    "next_cursor": null,
+                    "limit": 20
+                  },
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  }
+}
