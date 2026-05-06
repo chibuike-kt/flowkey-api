@@ -1,0 +1,413 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey Wallet API",
+    "version": "1.0.0",
+    "description": "Wallet balance and transaction history API for FlowKey.\n\n## Architecture\n\nThe wallet has **no balance column**. Balance is derived at query time from the double-entry `ledger_entries` table:\n\n```\nbalance = SUM(credit entries) - SUM(debit entries)\n```\n\nThis means the balance is always provably correct — it cannot drift from the ledger.\n\n## Monetary Values\n\nAll amounts are in **kobo** (integer), returned as **strings** to avoid JavaScript `Number` precision loss on large values.\n\nConversion: `kobo / 100 = naira`. For example, `500000` kobo = ₦5,000.\n\n## Transaction Direction\n\nEach transaction in the list is annotated with a `direction` field relative to the requesting user's wallet:\n- `credit` — money arrived into the wallet (received transfer, funding)\n- `debit` — money left the wallet (sent transfer, bill payment, withdrawal)\n- `null` — direction cannot be determined (rare edge case)\n\n## Pagination\n\nBoth endpoints use **cursor-based pagination** ordered by `created_at DESC`. Pass the `next_cursor` from one response as the `cursor` query param in the next request. A null `next_cursor` means you are on the last page."
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://flowkey-api.onrender.com/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Wallet", "description": "Balance and transaction history" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "RS256 JWT. Obtain from POST /auth/complete or POST /auth/login."
+      }
+    },
+    "parameters": {
+      "CursorParam": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "Pagination cursor. Pass the `next_cursor` value from the previous response to get the next page."
+      },
+      "LimitParam": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
+        "description": "Number of records per page. Maximum 50."
+      }
+    },
+    "schemas": {
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success", "data", "meta", "error"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data": { "type": "object", "nullable": true },
+          "meta": { "type": "object", "nullable": true },
+          "error": { "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data": { "nullable": true, "example": null },
+          "meta": { "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      },
+      "KoboAmount": {
+        "type": "string",
+        "description": "Monetary amount in kobo, encoded as a string. Divide by 100 to get naira.",
+        "examples": ["500000", "0", "100000000"]
+      },
+      "WalletBalance": {
+        "type": "object",
+        "description": "Real-time wallet balance computed from the ledger. No balance column is ever stored — this is always live.",
+        "properties": {
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The wallet's unique identifier."
+          },
+          "balance_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Current available balance. Formula: ledger_credit_kobo - ledger_debit_kobo."
+          },
+          "ledger_credit_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Lifetime sum of all credit ledger entries (money received)."
+          },
+          "ledger_debit_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Lifetime sum of all debit ledger entries (money sent)."
+          },
+          "last_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp of the most recent ledger entry. Null for a brand-new wallet with no activity."
+          }
+        },
+        "example": {
+          "wallet_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "balance_kobo": "25000000",
+          "ledger_credit_kobo": "50000000",
+          "ledger_debit_kobo": "25000000",
+          "last_updated_at": "2026-05-06T10:00:00.000Z"
+        }
+      },
+      "TransactionDirection": {
+        "type": "string",
+        "enum": ["credit", "debit"],
+        "nullable": true,
+        "description": "Direction relative to the requesting user's wallet. credit = money in, debit = money out, null = indeterminate."
+      },
+      "TransactionType": {
+        "type": "string",
+        "enum": [
+          "transfer_internal",
+          "transfer_bank",
+          "bill_payment",
+          "qr_payment",
+          "terminal_payment",
+          "reversal",
+          "fee",
+          "funding",
+          "refund"
+        ],
+        "description": "The category of transaction."
+      },
+      "TransactionStatus": {
+        "type": "string",
+        "enum": ["pending", "processing", "completed", "failed", "reversed", "disputed"],
+        "description": "Current processing status of the transaction."
+      },
+      "Transaction": {
+        "type": "object",
+        "description": "A single transaction record as seen from the requesting user's wallet perspective.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "type": { "$ref": "#/components/schemas/TransactionType" },
+          "status": { "$ref": "#/components/schemas/TransactionStatus" },
+          "amount_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Gross transaction amount before fees."
+          },
+          "fee_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Fee charged for this transaction. 0 for fee-free transactions."
+          },
+          "net_amount_kobo": {
+            "allOf": [{ "$ref": "#/components/schemas/KoboAmount" }],
+            "description": "Net amount after fees. For debits: amount - fee. For credits: amount received."
+          },
+          "narration": {
+            "type": "string",
+            "nullable": true,
+            "description": "Optional description of the transaction.",
+            "example": "Rent payment"
+          },
+          "reference": {
+            "type": "string",
+            "description": "Unique transaction reference. Use for support queries.",
+            "example": "FLK-20260506-A1B2C3"
+          },
+          "direction": { "$ref": "#/components/schemas/TransactionDirection" },
+          "counterparty_wallet_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Wallet ID of the other party in the transaction. Null for bill payments and external transfers where no FlowKey counterparty exists."
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the transaction reached a terminal state (completed, failed, or reversed). Null while still pending or processing."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the transaction was initiated."
+          }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Pass this as the `cursor` query param to fetch the next page. Null when you have reached the last page."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Number of items per page that was applied.",
+            "example": 20
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": {
+              "success": false,
+              "data": null,
+              "meta": null,
+              "error": { "code": "UNAUTHORIZED", "message": "Authentication required. Please log in." }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Wallet not found for this user.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": {
+              "success": false,
+              "data": null,
+              "meta": null,
+              "error": { "code": "NOT_FOUND", "message": "Wallet not found." }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/wallet/balance": {
+      "get": {
+        "tags": ["Wallet"],
+        "operationId": "getWalletBalance",
+        "summary": "Get wallet balance",
+        "description": "Returns the authenticated user's current wallet balance, computed live from the double-entry ledger.\n\nThe response includes both the net balance and the gross credit/debit totals so the client can display a full financial picture.\n\n**Performance note:** This query aggregates over all ledger entries for the wallet. For wallets with very high transaction volume, consider caching the result client-side for a few seconds.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Balance retrieved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/WalletBalance" }
+                      }
+                    }
+                  ]
+                },
+                "examples": {
+                  "active_wallet": {
+                    "summary": "Wallet with transaction history",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "wallet_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "balance_kobo": "25000000",
+                        "ledger_credit_kobo": "50000000",
+                        "ledger_debit_kobo": "25000000",
+                        "last_updated_at": "2026-05-06T10:00:00.000Z"
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "new_wallet": {
+                    "summary": "Brand new wallet — no transactions yet",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "wallet_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                        "balance_kobo": "0",
+                        "ledger_credit_kobo": "0",
+                        "ledger_debit_kobo": "0",
+                        "last_updated_at": null
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/wallet/transactions": {
+      "get": {
+        "tags": ["Wallet"],
+        "operationId": "listWalletTransactions",
+        "summary": "List wallet transactions",
+        "description": "Returns a paginated list of transactions where the authenticated user's wallet was either the sender or receiver, ordered by most recent first.\n\nEach transaction includes a `direction` field (`credit` or `debit`) relative to the requesting wallet, so the client does not need to perform this derivation.\n\n**Filtering:** No filtering is supported at this endpoint. To get transactions by type (e.g. only bill payments), filter client-side or use the dedicated endpoints in Phase 10.\n\n**Pagination:** Cursor-based. Pass `next_cursor` from the previous response as `cursor` in the next request. `next_cursor: null` means you are on the last page.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CursorParam" },
+          { "$ref": "#/components/parameters/LimitParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transaction list retrieved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Transaction" }
+                    },
+                    "meta": { "$ref": "#/components/schemas/PaginationMeta" },
+                    "error": { "nullable": true, "example": null }
+                  }
+                },
+                "examples": {
+                  "first_page": {
+                    "summary": "First page of transactions",
+                    "value": {
+                      "success": true,
+                      "data": [
+                        {
+                          "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                          "type": "transfer_internal",
+                          "status": "completed",
+                          "amount_kobo": "500000",
+                          "fee_kobo": "0",
+                          "net_amount_kobo": "500000",
+                          "narration": "Rent payment",
+                          "reference": "FLK-20260506-A1B2C3",
+                          "direction": "debit",
+                          "counterparty_wallet_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                          "completed_at": "2026-05-06T10:01:00.000Z",
+                          "created_at": "2026-05-06T10:00:00.000Z"
+                        },
+                        {
+                          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                          "type": "funding",
+                          "status": "completed",
+                          "amount_kobo": "5000000",
+                          "fee_kobo": "0",
+                          "net_amount_kobo": "5000000",
+                          "narration": null,
+                          "reference": "FLK-20260505-D4E5F6",
+                          "direction": "credit",
+                          "counterparty_wallet_id": null,
+                          "completed_at": "2026-05-05T08:00:00.000Z",
+                          "created_at": "2026-05-05T07:59:00.000Z"
+                        }
+                      ],
+                      "meta": {
+                        "next_cursor": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "limit": 20
+                      },
+                      "error": null
+                    }
+                  },
+                  "last_page": {
+                    "summary": "Last page — no more results",
+                    "value": {
+                      "success": true,
+                      "data": [
+                        {
+                          "id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                          "type": "bill_payment",
+                          "status": "completed",
+                          "amount_kobo": "150000",
+                          "fee_kobo": "10000",
+                          "net_amount_kobo": "140000",
+                          "narration": "MTN airtime",
+                          "reference": "FLK-20260504-G7H8I9",
+                          "direction": "debit",
+                          "counterparty_wallet_id": null,
+                          "completed_at": "2026-05-04T14:00:00.000Z",
+                          "created_at": "2026-05-04T13:59:30.000Z"
+                        }
+                      ],
+                      "meta": {
+                        "next_cursor": null,
+                        "limit": 20
+                      },
+                      "error": null
+                    }
+                  },
+                  "empty": {
+                    "summary": "No transactions yet",
+                    "value": {
+                      "success": true,
+                      "data": [],
+                      "meta": {
+                        "next_cursor": null,
+                        "limit": 20
+                      },
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  }
+}

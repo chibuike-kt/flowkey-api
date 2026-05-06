@@ -3,45 +3,33 @@ import type { Config } from 'jest';
 const config: Config = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-
-  roots: ['<rootDir>/tests', '<rootDir>/src'],
-
-  testMatch: ['<rootDir>/tests/**/*.test.ts', '<rootDir>/tests/**/*.spec.ts'],
-
+  roots: ['<rootDir>/tests/unit', '<rootDir>/src'],
+  testMatch: ['**/*.test.ts', '**/*.spec.ts'],
   transform: {
     '^.+\\.ts$': [
       'ts-jest',
       {
         tsconfig: 'tsconfig.test.json',
-        diagnostics: {
-          ignoreCodes: ['TS151002'],
-        },
+        diagnostics: { ignoreCodes: ['TS151002'] },
       },
     ],
   },
-
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    // Resolve .js extensions in CJS mode (NodeNext compat)
+    '^(\\.{1,2}/.*)\\.js$': '$1',
   },
-
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/server.ts', '!src/data/**/*.ts'],
-
   coverageThreshold: {
-    global: {
-      branches: 100,
-      functions: 100,
-      lines: 100,
-      statements: 100,
-    },
+    global: { branches: 100, functions: 100, lines: 100, statements: 100 },
   },
-
   coverageReporters: ['text', 'lcov', 'html'],
   coverageDirectory: 'coverage',
-
   clearMocks: true,
   resetMocks: true,
   restoreMocks: true,
-
+  // setupFilesAfterEnv runs AFTER Jest globals (describe/it/beforeAll) are available
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   testTimeout: 30000,
   verbose: true,
 };

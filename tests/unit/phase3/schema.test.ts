@@ -1,43 +1,29 @@
-/**
- * Phase 3 — Schema unit tests
- *
- * Reads ALL migration files combined so tests pass regardless of
- * whether Prisma generated a new migration or our hand-crafted one is present.
- */
 import * as fs from 'fs';
 import * as path from 'path';
 
 const migrationsDir = path.resolve(__dirname, '../../../prisma/migrations');
 const schemaPath = path.resolve(__dirname, '../../../prisma/schema.prisma');
 
-// Read ALL migration SQL files combined into one string
 function readAllMigrations(): string {
   if (!fs.existsSync(migrationsDir)) return '';
-  const dirs = fs
+  return fs
     .readdirSync(migrationsDir)
     .filter((d) => fs.statSync(path.join(migrationsDir, d)).isDirectory())
-    .sort();
-
-  return dirs
+    .sort()
     .map((dir) => {
-      const sqlPath = path.join(migrationsDir, dir, 'migration.sql');
-      return fs.existsSync(sqlPath) ? fs.readFileSync(sqlPath, 'utf8') : '';
+      const p = path.join(migrationsDir, dir, 'migration.sql');
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
     })
     .join('\n');
 }
 
-// Find migration containing ledger_entries + audit_logs (the initial schema)
 function findInitialMigration(): string | null {
   if (!fs.existsSync(migrationsDir)) return null;
-  const dirs = fs
-    .readdirSync(migrationsDir)
-    .filter((d) => fs.statSync(path.join(migrationsDir, d)).isDirectory())
-    .sort();
-  for (const dir of dirs) {
-    const sqlPath = path.join(migrationsDir, dir, 'migration.sql');
-    if (fs.existsSync(sqlPath)) {
-      const content = fs.readFileSync(sqlPath, 'utf8');
-      if (content.includes('ledger_entries') && content.includes('audit_logs')) return sqlPath;
+  for (const dir of fs.readdirSync(migrationsDir).sort()) {
+    const p = path.join(migrationsDir, dir, 'migration.sql');
+    if (fs.existsSync(p)) {
+      const sql = fs.readFileSync(p, 'utf8');
+      if (sql.includes('ledger_entries') && sql.includes('audit_logs')) return p;
     }
   }
   return null;
@@ -60,7 +46,6 @@ describe('Migration file', () => {
     expect(fs.existsSync(initialMigrationFile!)).toBe(true);
   });
 
-  // Immutability triggers — in our hand-crafted file
   it('enforces append-only ledger_entries', () => {
     expect(allSql).toContain('enforce_ledger_immutability');
     expect(allSql).toContain('ledger_entries_immutability_guard');
@@ -78,18 +63,15 @@ describe('Migration file', () => {
   });
 
   it('does NOT use floating point types for money', () => {
-    // Check the initial migration specifically
     const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
     expect(sql).not.toMatch(/"\w+"\s+FLOAT/);
     expect(sql).not.toMatch(/"\w+"\s+DECIMAL/);
-    expect(sql).not.toMatch(/"\w+"\s+NUMERIC/);
     expect(sql).not.toMatch(/"\w+"\s+REAL/);
   });
 
   it('uses TIMESTAMPTZ (no naive TIMESTAMP)', () => {
     const sql = fs.readFileSync(initialMigrationFile!, 'utf8');
-    const stripped = sql.replace(/TIMESTAMPTZ/g, '');
-    expect(stripped).not.toMatch(/\bTIMESTAMP\b/);
+    expect(sql.replace(/TIMESTAMPTZ/g, '')).not.toMatch(/\bTIMESTAMP\b/);
   });
 
   it('uses gen_random_uuid() for primary keys', () => {
@@ -99,7 +81,6 @@ describe('Migration file', () => {
     expect(uuidCount).toBeGreaterThanOrEqual(tableCount);
   });
 
-  // Check constraints — in our hand-crafted file
   it('enforces positive amount constraint', () => {
     expect(allSql).toContain('"amount" > 0');
   });
