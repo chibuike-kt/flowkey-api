@@ -1,15 +1,3 @@
-/**
- * FlowKey — Server Entry Point
- *
- * Boot sequence:
- *  1. Load environment (dev/test only)
- *  2. Initialise config (AWS secrets in prod)
- *  3. Validate DB
- *  4. Validate Redis
- *  5. Create Express app
- *  6. Start server
- */
-
 import * as dotenv from 'dotenv';
 
 // -----------------------------------------------------------------------------
@@ -29,36 +17,12 @@ import { createApp } from './app';
 import { logger } from './common/utils/logger';
 import { prisma } from './common/utils/prisma';
 import { redis } from './common/utils/redis';
-import * as net from 'net';
 
 // -----------------------------------------------------------------------------
 // BOOT FUNCTION
 // -----------------------------------------------------------------------------
 async function boot(): Promise<void> {
   await initConfig();
-  // TEMP SMTP DEBUG TEST
-  const socket = net.createConnection(465, 'smtp.gmail.com');
-
-  socket.setTimeout(10000);
-
-  socket.on('connect', () => {
-    console.log('SMTP CONNECTED');
-    socket.end();
-  });
-
-  socket.on('timeout', () => {
-    console.error('SMTP TIMEOUT');
-    socket.destroy();
-  });
-
-  socket.on('error', (err: unknown) => {
-    console.error('SMTP ERROR RAW:', err);
-    console.error('SMTP ERROR STRING:', String(err));
-    process.on('uncaughtException', (err) => {
-      console.error('UNCAUGHT:', err);
-    });
-  });
-
   const cfg = config();
 
   logger.info('FlowKey API starting', {

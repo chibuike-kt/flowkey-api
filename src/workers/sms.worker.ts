@@ -1,13 +1,5 @@
-/**
- * FlowKey — SMS Worker (Stubbed — Twilio-ready)
- *
- * To activate Twilio:
- *   1. npm install twilio
- *   2. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER in env
- *   3. Uncomment the Twilio block below
- */
 import { Worker } from 'bullmq';
-import { redis } from '../common/utils/redis';
+import { createRedisConnection } from '../common/utils/redis';
 import { logger } from '../common/utils/logger';
 import type { SmsJobPayload } from '../queues/jobs';
 
@@ -65,7 +57,8 @@ async function processSmsJob(job: { data: SmsJobPayload; id?: string }): Promise
 
 export function createSmsWorker(): Worker<SmsJobPayload> {
   const worker = new Worker<SmsJobPayload>('sms-queue', async (job) => processSmsJob(job), {
-    connection: redis,
+    connection: createRedisConnection(),
+    prefix: process.env['REDIS_KEY_PREFIX'] ?? 'fk',
     concurrency: 10,
   });
 

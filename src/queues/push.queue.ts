@@ -1,6 +1,23 @@
 import { pushQueue } from './index';
 import { logger } from '../common/utils/logger';
+import { AppError, ErrorCode } from '../common/errors/AppError';
 import type { PushJob } from './jobs';
+
+const isProduction = process.env['NODE_ENV'] === 'production';
+
+function handleQueueError(err: unknown, context: Record<string, unknown>): void {
+  const message = err instanceof Error ? err.message : String(err);
+  logger.error('Push queue: failed to enqueue job', { ...context, error: message });
+
+  if (isProduction) {
+    throw new AppError(
+      ErrorCode.EXTERNAL_SERVICE_ERROR,
+      'Notification service temporarily unavailable. Please try again.',
+    );
+  }
+
+  logger.warn('DEV: push queue error — continuing without delivery', context);
+}
 
 export async function queuePushNotification(
   fcmToken: string,
@@ -20,27 +37,8 @@ export async function queuePushNotification(
 
   try {
     await pushQueue.add('send-push', payload, { jobId: dedupKey });
-
     logger.info('Push job queued: send-push', { dedup_key: dedupKey });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-
-    logger.error('Push queue enqueue failed', {
-      dedup_key: dedupKey,
-      error: message,
-    });
-
-    // Dev fallback — helps you test flows without FCM wired
-    if (process.env.NODE_ENV !== 'production') {
-      logger.warn('DEV PUSH fallback — notification not sent', {
-        title,
-        body,
-        fcmToken: `${fcmToken.slice(0, 10)}...`,
-      });
-    }
-
-    // ⚠️ Decide your policy:
-    // - throw here (strict reliability)
-    // - or swallow (high availability)
+    handleQueueError(err, { dedup_key: dedupKey });
   }
 }

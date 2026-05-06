@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import { redis } from '../common/utils/redis';
+import { createRedisConnection } from '../common/utils/redis';
 import { logger } from '../common/utils/logger';
 import { config } from '../config';
 import type { EmailJobPayload } from '../queues/jobs';
@@ -206,7 +206,8 @@ async function processEmailJob(job: { data: EmailJobPayload; id?: string }): Pro
 
 export function createEmailWorker(): Worker<EmailJobPayload> {
   const worker = new Worker<EmailJobPayload>('email-queue', async (job) => processEmailJob(job), {
-    connection: redis,
+    connection: createRedisConnection(),
+    prefix: process.env['REDIS_KEY_PREFIX'] ?? 'fk',
     concurrency: 5, // process up to 5 emails concurrently
     limiter: {
       max: 30, // max 30 jobs per duration window
