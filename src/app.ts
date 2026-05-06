@@ -9,10 +9,10 @@ import { notFoundHandler } from './common/middleware/notFound';
 // Phase 5 — Auth & Settings routers (active)
 import { authRouter } from './features/auth/auth.router';
 import { settingsRouter } from './features/settings/settings.router';
+import { kycRouter } from './features/kyc/kyc.router';
+import { walletRouter } from './features/wallet/wallet.router';
 
 // Future phase routers — uncommented as each phase completes
-import { kycRouter } from './features/kyc/kyc.router';
-// import { walletRouter } from './features/wallet/wallet.router';
 // import { transferRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
 // import { billRouter } from './features/bills/bills.router';
@@ -95,9 +95,9 @@ export function createApp(): express.Application {
   app.use(`${apiPrefix}/auth`, authRouter);
   app.use(`${apiPrefix}/settings`, settingsRouter);
   app.use(`${apiPrefix}/kyc`, kycRouter);
+  app.use(`${apiPrefix}/wallet`, walletRouter);
 
   // Remaining routers mounted as each phase completes:
-  //   app.use(`${apiPrefix}/wallet`, walletRouter);
   //   app.use(`${apiPrefix}/transfers`, transfersRouter);
   //   etc.
 

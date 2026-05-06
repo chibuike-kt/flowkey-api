@@ -13,9 +13,14 @@ export const redis = new Redis(redisUrl, {
     logger.warn(`Redis reconnecting (attempt ${times})`, { delay });
     return delay;
   },
-  keyPrefix: process.env.REDIS_KEY_PREFIX ?? 'fk:',
+
+  // REMOVE keyPrefix completely (BullMQ will break if you use it)
+
   enableReadyCheck: true,
-  maxRetriesPerRequest: 3,
+
+  // REQUIRED for BullMQ (very important)
+  maxRetriesPerRequest: null,
+
   lazyConnect: false,
 });
 
