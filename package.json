@@ -1,7 +1,7 @@
 {
   "name": "flowkey-api",
   "version": "0.1.0",
-  "description": "FlowKey \u00e2\u20ac\u201d wallet-based fintech orchestration platform. Production-grade backend.",
+  "description": "FlowKey â€” wallet-based fintech orchestration platform. Production-grade backend.",
   "main": "dist/server.js",
   "engines": {
     "node": ">=24.0.0"
@@ -40,8 +40,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.4.1",
-    "firebase-admin": "^13.8.0",
+    "express-rate-limit": "^8.5.1",
+    "firebase-admin": "^13.9.0",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.3",
