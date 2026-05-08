@@ -4,20 +4,20 @@ import { idempotencyCheck } from '../../common/middleware/idempotency';
 import {
   handleResolveRecipient,
   handleInternalTransfer,
+  handleBankTransfer,
+  handleListTransfers,
   handleGetTransaction,
+  handleRetryTransfer,
 } from './transfers.controller';
 
 const router = Router();
-
 router.use(requireAuth);
 
-// POST /transfers/resolve-recipient
 router.post('/resolve-recipient', handleResolveRecipient);
-
-// POST /transfers/internal
 router.post('/internal', idempotencyCheck, handleInternalTransfer);
-
-// GET /transfers/:id
+router.post('/bank', idempotencyCheck, handleBankTransfer);
+router.get('/', handleListTransfers);
 router.get('/:id', handleGetTransaction);
+router.post('/:id/retry', handleRetryTransfer);
 
 export { router as transfersRouter };

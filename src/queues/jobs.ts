@@ -96,3 +96,27 @@ export interface PushJob {
 }
 
 export type PushJobPayload = PushJob;
+
+
+// ---------------------------------------------------------------------------
+// Bank transfer webhook jobs
+// ---------------------------------------------------------------------------
+export interface ProcessBankTransferJobData {
+  transactionId: string;
+  reference: string;
+  senderWalletId: string;
+  amountKobo: string; // BigInt serialised as string
+  bankCode: string;
+  accountNumber: string;
+  accountName: string;
+  narration: string | null;
+  attemptNumber: number;
+}
+
+export interface AutoReverseBankTransferJobData {
+  originalTransactionId: string;
+  senderWalletId: string;
+  amountKobo: string;
+  reference: string;
+  failureReason: string;
+}

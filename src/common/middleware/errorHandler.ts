@@ -1,11 +1,3 @@
-/**
- * FlowKey — Global Error Handler Middleware
- *
- * This is the ONLY place where errors are converted to HTTP responses.
- * All service layer code throws AppError instances.
- * Zod validation errors are caught here and normalised.
- * Unknown errors produce a generic 500 with NO internal details exposed.
- */
 
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
