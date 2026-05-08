@@ -1,0 +1,473 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey QR Code API",
+    "version": "1.0.0",
+    "description": "QR code generation and decoding for FlowKey-to-FlowKey transfers.\n\n## How QR transfers work\n\n```\n[Recipient]                          [Sender]\n    |                                    |\n    | POST /qr/generate                  |\n    | → QR code with encoded payload     |\n    |                                    |\n    | Display QR (as image or share)     |\n    |                        [scan QR]   |\n    |                                    |\n    |                  POST /qr/decode   |\n    |              ← recipient_wallet_id |\n    |              ← suggested_amount    |\n    |                                    |\n    |              POST /transfers/internal\n    |               source: \"qr_code\"   |\n    |               qr_token: qr_id      |\n    |                                    |\n    |         ← transfer completed       |\n```\n\n## QR payload format\n\nEvery QR code contains a **base64url-encoded JSON payload** signed with HMAC-SHA256. The signature is verified server-side on decode — forged QR codes are rejected.\n\nPayload structure:\n```json\n{\n  \"v\": 1,\n  \"type\": \"static\" | \"dynamic\",\n  \"qr_id\": \"<uuid>\",\n  \"wallet_id\": \"<uuid>\",\n  \"nonce\": \"<8 random bytes hex>\",\n  \"amount_kobo\": 500000,\n  \"expires_at\": \"2026-05-08T10:30:00.000Z\"\n}\n```\n\n`amount_kobo` and `expires_at` are only present on dynamic QR codes.\n\n## Static vs dynamic\n\n| | Static | Dynamic |\n|---|---|---|\n| Amount | Sender chooses | Fixed by recipient |\n| Expiry | Never | Configurable (default 30 min) |\n| Use cases | Permanent payment link, shop counter | One-time invoice, event payment |\n| Auto-deactivates | No | On expiry |\n\n## Self-payment\n\nA user cannot scan their own QR code. The decode endpoint returns `409` if the requesting user is the QR code owner.\n\n## Monetary values\n\nAll amounts in **kobo** (integer), returned as **strings**. `kobo / 100 = naira`."
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://api.flowkey.app/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "QR Codes", "description": "Generate and manage payment QR codes" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "parameters": {
+      "QrId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "QR code ID."
+      }
+    },
+    "schemas": {
+      "QrCodeType": {
+        "type": "string",
+        "enum": ["static", "dynamic"],
+        "description": "Static QR: no fixed amount, no expiry. Dynamic QR: fixed amount, expires after a configurable window."
+      },
+      "QrCodeRecord": {
+        "type": "object",
+        "description": "A QR code record as stored and returned to the owner.",
+        "required": ["id", "user_id", "wallet_id", "type", "payload", "hmac_sig", "is_active", "created_at"],
+        "properties": {
+          "id":          { "type": "string", "format": "uuid", "description": "Unique QR code identifier. This is the `qr_token` to send in `POST /transfers/internal`." },
+          "user_id":     { "type": "string", "format": "uuid", "description": "Owner of this QR code." },
+          "wallet_id":   { "type": "string", "format": "uuid", "description": "The wallet funds will be sent to." },
+          "type":        { "$ref": "#/components/schemas/QrCodeType" },
+          "amount_kobo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Fixed amount in kobo. `null` for static QR codes — the sender chooses the amount.",
+            "example": "500000"
+          },
+          "narration": {
+            "type": "string",
+            "nullable": true,
+            "description": "Optional description shown to the sender after scanning.",
+            "example": "Coffee ☕"
+          },
+          "payload": {
+            "type": "string",
+            "description": "Base64url-encoded QR payload. Embed this in the QR image or share it as a link. Pass to `POST /qr/decode` to verify and extract transfer details.",
+            "example": "eyJ2IjoxLCJ0eXBlIjoic3RhdGljIiwicXJfaWQiOiIzZmE4..."
+          },
+          "hmac_sig": {
+            "type": "string",
+            "description": "HMAC-SHA256 signature of the raw payload JSON. 64-character hex string.",
+            "example": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When this QR code expires. `null` for static QR codes."
+          },
+          "is_active":   { "type": "boolean", "description": "Whether this QR code can still be decoded. Set to false by DELETE /qr/:id or on expiry." },
+          "created_at":  { "type": "string", "format": "date-time" }
+        },
+        "example": {
+          "id":          "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "user_id":     "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "wallet_id":   "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "type":        "dynamic",
+          "amount_kobo": "500000",
+          "narration":   "Coffee ☕",
+          "payload":     "eyJ2IjoxLCJ0eXBlIjoiZHluYW1pYyIsInFyX2lkIjoiN2M5ZTY2NzktNzQyNS00MGRlLTk0NGItZTA3ZmMxZjkwYWU3Iiwid2FsbGV0X2lkIjoiOWIxZGViNGQtM2I3ZC00YmFkLTliZGQtMmIwZDdiM2RjYjZkIiwiYW1vdW50X2tvYm8iOjUwMDAwMCwibm9uY2UiOiJhMWIyYzNkNGU1ZjZhN2I4IiwiZXhwaXJlc19hdCI6IjIwMjYtMDUtMDhUMTA6MzA6MDAuMDAwWiJ9",
+          "hmac_sig":    "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+          "expires_at":  "2026-05-08T10:30:00.000Z",
+          "is_active":   true,
+          "created_at":  "2026-05-08T10:00:00.000Z"
+        }
+      },
+      "DecodedQr": {
+        "type": "object",
+        "description": "Result of decoding a QR payload. Contains everything the client needs to call `POST /transfers/internal`.",
+        "required": ["qr_id", "wallet_id", "type", "is_active", "recipient_wallet_id"],
+        "properties": {
+          "qr_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Use as `qr_token` in `POST /transfers/internal`."
+          },
+          "wallet_id":   { "type": "string", "format": "uuid" },
+          "type":        { "$ref": "#/components/schemas/QrCodeType" },
+          "amount_kobo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Fixed amount. `null` for static QR — sender provides their own amount."
+          },
+          "narration": {
+            "type": "string",
+            "nullable": true,
+            "description": "Description from the QR code owner. Display to the sender before they confirm."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "is_active": { "type": "boolean" },
+          "recipient_wallet_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Pass directly as `recipient_wallet_id` in `POST /transfers/internal`."
+          },
+          "suggested_amount_kobo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Same as `amount_kobo`. Convenience alias for building the transfer body. `null` for static QR — client must ask the sender to enter an amount."
+          }
+        },
+        "example": {
+          "qr_id":                 "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "wallet_id":             "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "type":                  "dynamic",
+          "amount_kobo":           "500000",
+          "narration":             "Coffee ☕",
+          "expires_at":            "2026-05-08T10:30:00.000Z",
+          "is_active":             true,
+          "recipient_wallet_id":   "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "suggested_amount_kobo": "500000"
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data":    {},
+          "meta":    { "nullable": true },
+          "error":   { "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required." } }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Not authorized to access this QR code.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "FORBIDDEN", "message": "You do not have access to this QR code." } }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "QR code not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "NOT_FOUND", "message": "QR code not found." } }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request validation failed.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/qr/generate": {
+      "post": {
+        "tags": ["QR Codes"],
+        "operationId": "generateQrCode",
+        "summary": "Generate a QR code",
+        "description": "Create a static or dynamic QR code for your wallet.\n\nThe response `payload` field is what gets encoded into the actual QR image on the client. Share it as a link, display it as a QR image, or store it in a beneficiary profile.\n\n**Static QR** — no amount, no expiry. Use for a permanent payment address (like a counter at a shop or your profile link).\n\n**Dynamic QR** — fixed amount, expires after `expires_in_minutes` (default 30). Use for specific payment requests like sending an invoice.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "title": "Static QR",
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                      "type":      { "type": "string", "enum": ["static"] },
+                      "narration": { "type": "string", "maxLength": 255, "description": "Optional label shown to the sender after scanning." }
+                    }
+                  },
+                  {
+                    "title": "Dynamic QR",
+                    "type": "object",
+                    "required": ["type", "amount_kobo"],
+                    "properties": {
+                      "type":        { "type": "string", "enum": ["dynamic"] },
+                      "amount_kobo": { "type": "integer", "minimum": 1, "description": "Fixed payment amount in kobo." },
+                      "narration":   { "type": "string", "maxLength": 255 },
+                      "expires_in_minutes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10080,
+                        "default": 30,
+                        "description": "Expiry window in minutes. Min 1 min, max 7 days (10080 min). Defaults to 30 minutes."
+                      }
+                    }
+                  }
+                ],
+                "discriminator": { "propertyName": "type" }
+              },
+              "examples": {
+                "static": {
+                  "summary": "Static QR — permanent payment address",
+                  "value": { "type": "static", "narration": "Pay Kingsley" }
+                },
+                "dynamic_30min": {
+                  "summary": "Dynamic QR — ₦5,000 for 30 minutes",
+                  "value": { "type": "dynamic", "amount_kobo": 500000, "narration": "Coffee ☕", "expires_in_minutes": 30 }
+                },
+                "dynamic_1day": {
+                  "summary": "Dynamic QR — ₦50,000 invoice valid 24 hours",
+                  "value": { "type": "dynamic", "amount_kobo": 5000000, "narration": "Invoice #4821", "expires_in_minutes": 1440 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "QR code created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/QrCodeRecord" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "Wallet not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/qr/decode": {
+      "post": {
+        "tags": ["QR Codes"],
+        "operationId": "decodeQrCode",
+        "summary": "Decode a QR payload",
+        "description": "Verify and decode a QR payload scanned by the user. The server:\n\n1. Decodes the base64url payload\n2. Looks up the QR record in the database\n3. Verifies the HMAC signature — rejects forged or tampered QR codes\n4. Checks the QR is still active\n5. Checks expiry — auto-deactivates expired dynamic QR codes\n6. Rejects self-payment attempts\n\nOn success, returns a `DecodedQr` with `recipient_wallet_id` and `suggested_amount_kobo` ready to pass directly into `POST /transfers/internal`.\n\nThe client should display the recipient name, amount (if fixed), and narration to the user for confirmation **before** calling `POST /transfers/internal`.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["payload"],
+                "properties": {
+                  "payload": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The base64url-encoded payload from the QR code. This is the `payload` field returned by `POST /qr/generate`."
+                  }
+                }
+              },
+              "example": {
+                "payload": "eyJ2IjoxLCJ0eXBlIjoiZHluYW1pYyIsInFyX2lkIjoiN2M5ZTY2NzktNzQyNS00MGRlLTk0NGItZTA3ZmMxZjkwYWU3Iiwid2FsbGV0X2lkIjoiOWIxZGViNGQtM2I3ZC00YmFkLTliZGQtMmIwZDdiM2RjYjZkIiwiYW1vdW50X2tvYm8iOjUwMDAwMCwibm9uY2UiOiJhMWIyYzNkNGU1ZjZhN2I4IiwiZXhwaXJlc19hdCI6IjIwMjYtMDUtMDhUMTA6MzA6MDAuMDAwWiJ9"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "QR decoded and verified. Use the returned fields to call `POST /transfers/internal`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/DecodedQr" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "QR code is invalid for this transaction — expired, deactivated, or self-payment.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "expired": {
+                    "summary": "QR code has expired",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This QR code has expired." } }
+                  },
+                  "inactive": {
+                    "summary": "QR code was deactivated",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This QR code is no longer active." } }
+                  },
+                  "self_payment": {
+                    "summary": "User scanning their own QR code",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "You cannot pay yourself via QR code." } }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Payload is malformed, signature is invalid, or QR has been tampered with.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "tampered": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "QR code has been tampered with." } }
+                  },
+                  "invalid_sig": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "QR code signature is invalid." } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/qr": {
+      "get": {
+        "tags": ["QR Codes"],
+        "operationId": "listQrCodes",
+        "summary": "List your QR codes",
+        "description": "Returns all active QR codes belonging to the authenticated user, ordered by most recent first.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "QR code list returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "array", "items": { "$ref": "#/components/schemas/QrCodeRecord" } },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/qr/{id}": {
+      "get": {
+        "tags": ["QR Codes"],
+        "operationId": "getQrCode",
+        "summary": "Get a QR code",
+        "description": "Fetch a specific QR code by ID. Only the owner can access their QR codes.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/QrId" }],
+        "responses": {
+          "200": {
+            "description": "QR code returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/QrCodeRecord" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["QR Codes"],
+        "operationId": "deactivateQrCode",
+        "summary": "Deactivate a QR code",
+        "description": "Permanently deactivate a QR code. Once deactivated, any attempt to decode this QR will return a `409 CONFLICT`. This action cannot be undone — generate a new QR if needed.\n\nOnly the owner can deactivate their QR codes.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/QrId" }],
+        "responses": {
+          "200": {
+            "description": "QR code deactivated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "deactivated": { "type": "boolean", "example": true } } } } }
+                  ]
+                },
+                "example": { "success": true, "data": { "deactivated": true }, "meta": null, "error": null }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "QR code is already inactive.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "QR code is already inactive." } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+

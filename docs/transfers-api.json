@@ -1,0 +1,704 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey Transfers API",
+    "version": "1.0.0",
+    "description": "All money movement on FlowKey — FlowKey-to-FlowKey (internal) and FlowKey-to-Bank (external, async).\n\n## Transfer sources\n\nInternal transfers support three initiation modes, all routed through `POST /transfers/internal`:\n\n| `source` | How it works |\n|---|---|\n| `username` | Sender looked up recipient by FlowKey username |\n| `qr_code` | Sender scanned a QR code and decoded it via `POST /qr/decode` |\n| `universal_id` | Sender authenticated with their **own** UID + PIN on any device — funds leave the UID owner's account |\n\n## Universal ID (UID) auth\n\nThe UID feature lets a user initiate a transfer from **another person's device** — useful when they don't have their own phone. They enter their UID in the `uid_identifier` field and their own PIN in `pin`. The server resolves the UID to the owner's account, verifies the PIN against the owner's hash, and debits the owner's wallet. The device session holder is recorded as the initiating device only — not the sender.\n\nAll UID-authenticated transfers are flagged with `uid_device_mismatch: true` in the response and audit log.\n\n## Bank transfer lifecycle\n\nBank transfers settle asynchronously:\n\n```\nPOST /transfers/bank  →  201 { status: \"pending\" }\n  ↓  (BullMQ job, 2-5s)\n  →  status: \"processing\"  (processor called)\n  →  status: \"completed\"   (bank confirms)\n     OR\n  →  status: \"failed\"      (processor rejected)\n  →  status: \"reversed\"    (auto-reversal — funds returned to sender)\n```\n\nFailed transfers can be retried once via `POST /transfers/:id/retry`.\n\n## Monetary values\n\nAll amounts use **kobo** (integer), returned as **strings** to prevent JavaScript precision loss.\n\n`kobo / 100 = naira` — e.g. `\"500000\"` = ₦5,000.\n\n## Fraud protection\n\nAll transfers run fraud checks before any ledger operation:\n- Internal velocity: max 10/hour per wallet\n- UID-auth velocity: max 3/hour per UID (stricter — prevents brute-force targeting)\n- Bank velocity: max 5/hour per wallet\n- Large transfer flag: > ₦500k is logged and flagged for review (not blocked)\n\n## KYC daily limits\n\n| Channel | Tier 1 | Tier 2 | Tier 3 |\n|---|---|---|---|\n| FlowKey → FlowKey | ₦50,000 | ₦1,000,000 | ₦5,000,000 |\n| FlowKey → Bank | ₦50,000 | ₦1,000,000 | ₦5,000,000 |\n\n## Fees\n\n| Transfer type | Tier 1 | Tier 2+ |\n|---|---|---|\n| FlowKey → FlowKey | Free | Free |\n| FlowKey → Bank | ₦50 | Free |"
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://api.flowkey.app/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Transfers", "description": "FlowKey-to-FlowKey and FlowKey-to-Bank money movement" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Server stores result for 24 hours — duplicate requests with the same key return the original response without re-executing."
+      },
+      "TransactionId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "Transaction ID."
+      }
+    },
+    "schemas": {
+      "KoboAmount": {
+        "type": "string",
+        "description": "Monetary amount in kobo, encoded as a string. Divide by 100 for naira.",
+        "examples": ["500000", "0", "100000000"]
+      },
+      "TransferSource": {
+        "type": "string",
+        "enum": ["username", "qr_code", "universal_id", "api"],
+        "description": "How the transfer was initiated."
+      },
+      "BankTransferStatus": {
+        "type": "string",
+        "enum": ["pending", "processing", "completed", "failed", "reversed"],
+        "description": "Current lifecycle status of a bank transfer."
+      },
+      "RecipientPreview": {
+        "type": "object",
+        "description": "Resolved recipient information returned before a transfer is confirmed.",
+        "required": ["user_id", "username", "universal_id", "wallet_id"],
+        "properties": {
+          "user_id":      { "type": "string", "format": "uuid" },
+          "username":     { "type": "string", "example": "kingsley_kt" },
+          "display_name": { "type": "string", "nullable": true, "example": "Kingsley Chibuike" },
+          "universal_id": { "type": "string", "example": "BOLT-KP-4821" },
+          "wallet_id":    { "type": "string", "format": "uuid" }
+        }
+      },
+      "InternalTransferResult": {
+        "type": "object",
+        "description": "Result of a completed FlowKey-to-FlowKey transfer. Always settles synchronously.",
+        "required": ["transaction_id", "reference", "status", "amount_kobo", "fee_kobo", "net_amount_kobo", "source", "sender_wallet_id", "receiver_wallet_id", "created_at"],
+        "properties": {
+          "transaction_id":     { "type": "string", "format": "uuid" },
+          "reference":          { "type": "string", "example": "FLK-20260508-A1B2C3", "description": "Human-readable unique reference. Format: FLK-YYYYMMDD-XXXXXX" },
+          "status":             { "type": "string", "enum": ["completed"] },
+          "amount_kobo":        { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":           { "$ref": "#/components/schemas/KoboAmount", "description": "Always 0 for internal transfers." },
+          "net_amount_kobo":    { "$ref": "#/components/schemas/KoboAmount", "description": "Amount received by recipient. For internal transfers: equals amount_kobo." },
+          "narration":          { "type": "string", "nullable": true, "maxLength": 255, "example": "Rent payment" },
+          "source":             { "$ref": "#/components/schemas/TransferSource" },
+          "sender_wallet_id":   { "type": "string", "format": "uuid" },
+          "receiver_wallet_id": { "type": "string", "format": "uuid" },
+          "uid_device_mismatch": {
+            "type": "boolean",
+            "description": "Present and true when the transfer was authorized via UID on a device that does not belong to the sender. Indicates the UID auth flow was used.",
+            "example": true
+          },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "example": {
+          "transaction_id":     "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "reference":          "FLK-20260508-A1B2C3",
+          "status":             "completed",
+          "amount_kobo":        "500000",
+          "fee_kobo":           "0",
+          "net_amount_kobo":    "500000",
+          "narration":          "Rent payment",
+          "source":             "username",
+          "sender_wallet_id":   "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "receiver_wallet_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "created_at":         "2026-05-08T10:00:00.000Z"
+        }
+      },
+      "BankTransferResult": {
+        "type": "object",
+        "description": "Result of initiating a FlowKey-to-Bank transfer. Status starts as `pending` — poll `GET /transfers/:id` or listen for push notifications for updates.",
+        "required": ["transaction_id", "reference", "status", "amount_kobo", "fee_kobo", "net_amount_kobo", "recipient_account", "recipient_bank_name", "recipient_name", "estimated_settlement", "sender_wallet_id", "created_at"],
+        "properties": {
+          "transaction_id":       { "type": "string", "format": "uuid" },
+          "reference":            { "type": "string", "example": "FLK-20260508-D4E5F6" },
+          "status":               { "$ref": "#/components/schemas/BankTransferStatus" },
+          "amount_kobo":          { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":             { "$ref": "#/components/schemas/KoboAmount", "description": "₦50 (5000 kobo) for Tier 1, free for Tier 2+." },
+          "net_amount_kobo":      { "$ref": "#/components/schemas/KoboAmount", "description": "Amount debited from sender's wallet. For Tier 1: amount + fee." },
+          "narration":            { "type": "string", "nullable": true },
+          "recipient_account":    { "type": "string", "description": "Masked account number. Last 4 digits visible.", "example": "****6789" },
+          "recipient_bank_name":  { "type": "string", "example": "Guaranty Trust Bank" },
+          "recipient_name":       { "type": "string", "description": "Verified account name as confirmed by sender before submission.", "example": "John Doe" },
+          "estimated_settlement": { "type": "string", "format": "date-time", "description": "Best-estimate settlement time. Not guaranteed — actual settlement depends on the receiving bank." },
+          "sender_wallet_id":     { "type": "string", "format": "uuid" },
+          "created_at":           { "type": "string", "format": "date-time" },
+          "completed_at":         { "type": "string", "format": "date-time", "nullable": true, "description": "Set when transfer reaches a terminal state (completed, failed, or reversed)." }
+        },
+        "example": {
+          "transaction_id":       "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "reference":            "FLK-20260508-D4E5F6",
+          "status":               "pending",
+          "amount_kobo":          "1000000",
+          "fee_kobo":             "5000",
+          "net_amount_kobo":      "1005000",
+          "narration":            null,
+          "recipient_account":    "****6789",
+          "recipient_bank_name":  "Guaranty Trust Bank",
+          "recipient_name":       "John Doe",
+          "estimated_settlement": "2026-05-08T10:05:00.000Z",
+          "sender_wallet_id":     "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "created_at":           "2026-05-08T10:00:00.000Z",
+          "completed_at":         null
+        }
+      },
+      "TransactionDetail": {
+        "type": "object",
+        "description": "Full transaction record. Returned by GET /transfers/:id and items in GET /transfers.",
+        "required": ["id", "type", "status", "amount_kobo", "fee_kobo", "net_amount_kobo", "reference", "initiator_id", "created_at", "updated_at"],
+        "properties": {
+          "id":                  { "type": "string", "format": "uuid" },
+          "type":                { "type": "string", "enum": ["transfer_internal", "transfer_bank", "reversal"], "description": "Transaction type." },
+          "status":              { "type": "string", "enum": ["pending", "processing", "completed", "failed", "reversed"] },
+          "amount_kobo":         { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":            { "$ref": "#/components/schemas/KoboAmount" },
+          "net_amount_kobo":     { "$ref": "#/components/schemas/KoboAmount" },
+          "narration":           { "type": "string", "nullable": true },
+          "reference":           { "type": "string", "example": "FLK-20260508-A1B2C3" },
+          "source":              { "$ref": "#/components/schemas/TransferSource", "nullable": true },
+          "sender_wallet_id":    { "type": "string", "format": "uuid", "nullable": true },
+          "receiver_wallet_id":  { "type": "string", "format": "uuid", "nullable": true },
+          "initiator_id":        { "type": "string", "format": "uuid" },
+          "metadata":            { "type": "object", "nullable": true, "description": "Additional transfer metadata including source, device_id, uid_presented, uid_device_mismatch, bank details (masked)." },
+          "completed_at":        { "type": "string", "format": "date-time", "nullable": true },
+          "created_at":          { "type": "string", "format": "date-time" },
+          "updated_at":          { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": { "type": "string", "format": "uuid", "nullable": true },
+          "limit":       { "type": "integer", "example": 20 }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data":    { },
+          "meta":    { "nullable": true },
+          "error":   { "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error":   {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required." } }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but not authorized.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "FORBIDDEN", "message": "You do not have access to this resource." } }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "NOT_FOUND", "message": "Transaction not found." } }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request body or query failed validation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "recipient_wallet_id must be a UUID" } }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Business rule violation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Fraud velocity limit exceeded.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "RATE_LIMITED", "message": "Transfer velocity limit exceeded. Maximum 10 transfers per hour." } }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/transfers/resolve-recipient": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "resolveTransferRecipient",
+        "summary": "Resolve a recipient",
+        "description": "Look up a FlowKey user by **username** or **Universal ID** before initiating a transfer. Returns the resolved recipient's profile and wallet ID, which the client presents to the user for confirmation before submitting the actual transfer.\n\nThis endpoint does not move money and requires no Idempotency-Key.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["identifier"],
+                "properties": {
+                  "identifier": {
+                    "type": "string",
+                    "maxLength": 50,
+                    "description": "Username (e.g. `kingsley_kt`) or Universal ID (e.g. `BOLT-KP-4821`). Both formats are accepted.",
+                    "examples": ["kingsley_kt", "BOLT-KP-4821"]
+                  }
+                }
+              },
+              "examples": {
+                "by_username": {
+                  "summary": "Resolve by username",
+                  "value": { "identifier": "kingsley_kt" }
+                },
+                "by_uid": {
+                  "summary": "Resolve by Universal ID",
+                  "value": { "identifier": "BOLT-KP-4821" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recipient resolved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/RecipientPreview" } } }
+                  ]
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "user_id":      "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                    "username":     "kingsley_kt",
+                    "display_name": "Kingsley Chibuike",
+                    "universal_id": "BOLT-KP-4821",
+                    "wallet_id":    "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                  },
+                  "meta": null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/transfers/internal": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "executeInternalTransfer",
+        "summary": "Transfer to a FlowKey user",
+        "description": "Move funds between FlowKey wallets. Settles **synchronously** — the response always contains the final `completed` status.\n\n## Transfer sources\n\n**username / qr_code** (standard flow)\n```\nclient authenticates normally → submits this request with source: \"username\" or \"qr_code\"\n```\n\n**universal_id** (UID auth flow — user on a foreign device)\n```\n1. User enters their UID in uid_identifier\n2. Server resolves UID → wallet\n3. PIN is verified against the UID owner's account\n4. Debit comes from UID owner's wallet\n5. Response includes uid_device_mismatch: true\n```\n\n## Execution order\n1. Load sender (UID owner or device user)\n2. Verify recipient wallet exists and is active\n3. Fraud velocity check\n4. PIN lockout check\n5. PIN verify\n6. KYC daily limit check\n7. Pessimistic wallet lock\n8. Balance check\n9. Create transaction + double-entry ledger + receipt + audit log\n10. Return result",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["recipient_wallet_id", "amount_kobo", "pin"],
+                "properties": {
+                  "recipient_wallet_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Wallet ID of the recipient. Obtain from `POST /transfers/resolve-recipient` or `POST /qr/decode`."
+                  },
+                  "amount_kobo": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Amount in kobo. Must be a positive integer."
+                  },
+                  "narration": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": "Optional transfer description shown to both parties."
+                  },
+                  "pin": {
+                    "type": "string",
+                    "pattern": "^\\d{4}$",
+                    "description": "4-digit transaction PIN. In UID mode, this is the **UID owner's** PIN, not the device user's."
+                  },
+                  "source": {
+                    "$ref": "#/components/schemas/TransferSource",
+                    "default": "username"
+                  },
+                  "uid_identifier": {
+                    "type": "string",
+                    "maxLength": 50,
+                    "description": "Required when `source` is `universal_id`. The UID of the person authorizing this transfer (the sender). Format: `WORD-XX-NNNN`."
+                  },
+                  "qr_token": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "QR code ID. Required when `source` is `qr_code`. Obtain from `POST /qr/decode` → `qr_id`."
+                  },
+                  "device_id": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": "Device fingerprint. Logged for chargeback evidence. Never used to block transfers."
+                  }
+                }
+              },
+              "examples": {
+                "standard": {
+                  "summary": "Standard username transfer",
+                  "value": {
+                    "recipient_wallet_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                    "amount_kobo":         500000,
+                    "narration":           "Rent payment",
+                    "pin":                 "1234",
+                    "source":              "username",
+                    "device_id":           "device-abc-123"
+                  }
+                },
+                "qr": {
+                  "summary": "QR code transfer",
+                  "value": {
+                    "recipient_wallet_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                    "amount_kobo":         500000,
+                    "pin":                 "1234",
+                    "source":              "qr_code",
+                    "qr_token":            "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                  }
+                },
+                "uid_auth": {
+                  "summary": "UID-authenticated transfer (foreign device)",
+                  "value": {
+                    "recipient_wallet_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                    "amount_kobo":         200000,
+                    "narration":           "Quick transfer",
+                    "pin":                 "5678",
+                    "source":              "universal_id",
+                    "uid_identifier":      "BOLT-KP-4821",
+                    "device_id":           "friend-device-xyz"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Transfer completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/InternalTransferResult" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Business rule violation — insufficient balance, self-transfer, KYC limit reached, or inactive account.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "insufficient_balance": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "Insufficient balance. Available: ₦4,500." } }
+                  },
+                  "self_transfer": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "You cannot transfer to yourself." } }
+                  },
+                  "kyc_limit": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "FORBIDDEN", "message": "Daily transfer limit of ₦50,000 reached for your KYC tier." } }
+                  },
+                  "wrong_pin": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "INVALID_CREDENTIALS", "message": "Incorrect transaction PIN." } }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/transfers/bank": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "initiateBankTransfer",
+        "summary": "Transfer to a bank account",
+        "description": "Initiate an external bank transfer. The sender's wallet is **debited immediately**. The actual bank credit happens asynchronously — the response status will be `pending`.\n\n## Client flow\n1. Call `POST /transfers/bank/verify-account` (or use a previously saved beneficiary)\n2. Display the verified account name to the user for confirmation\n3. Submit this request with the confirmed `verified_account_name`\n4. Poll `GET /transfers/:id` or listen for push notifications for status updates\n\n## What happens on failure\nIf the bank transfer fails after the wallet has been debited, an **automatic reversal** is triggered:\n- The sender's wallet is credited back for the full debited amount\n- The transaction status becomes `reversed`\n- A push notification is sent to the user\n- The reversal is recorded as a separate auditable transaction\n\n## Retrying\nIf status is `failed`, the user can retry via `POST /transfers/:id/retry`. This re-queues the transfer without re-debiting the wallet.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount_kobo", "pin", "bank_code", "account_number", "account_name", "bank_name", "verified_account_name"],
+                "properties": {
+                  "amount_kobo": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Amount in kobo."
+                  },
+                  "narration": {
+                    "type": "string",
+                    "maxLength": 255
+                  },
+                  "pin": {
+                    "type": "string",
+                    "pattern": "^\\d{4}$"
+                  },
+                  "bank_code": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 10,
+                    "description": "CBN bank code. Examples: `058` (GTBank), `011` (First Bank), `100004` (Opay).",
+                    "example": "058"
+                  },
+                  "account_number": {
+                    "type": "string",
+                    "pattern": "^\\d{10}$",
+                    "description": "10-digit NUBAN account number.",
+                    "example": "0123456789"
+                  },
+                  "account_name": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100,
+                    "description": "Account name as returned by the bank's name-enquiry API.",
+                    "example": "John Doe"
+                  },
+                  "bank_name": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100,
+                    "example": "Guaranty Trust Bank"
+                  },
+                  "verified_account_name": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100,
+                    "description": "Account name as **confirmed by the user** on-screen. This is what gets stored on the transaction and receipt — it proves the user saw and agreed to the recipient name before sending.",
+                    "example": "John Doe"
+                  },
+                  "device_id": {
+                    "type": "string",
+                    "maxLength": 255
+                  }
+                }
+              },
+              "example": {
+                "amount_kobo":           1000000,
+                "narration":             "Invoice #4821",
+                "pin":                   "1234",
+                "bank_code":             "058",
+                "account_number":        "0123456789",
+                "account_name":          "John Doe",
+                "bank_name":             "Guaranty Trust Bank",
+                "verified_account_name": "John Doe",
+                "device_id":             "device-abc-123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Transfer initiated. Status is `pending` — settlement is async.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/BankTransferResult" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/transfers": {
+      "get": {
+        "tags": ["Transfers"],
+        "operationId": "listTransfers",
+        "summary": "List transfers",
+        "description": "Returns the authenticated user's transfer history — all transactions where they are the sender or receiver. Ordered by most recent first. Cursor-based pagination.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Pagination cursor from the previous response's `meta.next_cursor`."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["internal", "bank", "all"], "default": "all" },
+            "description": "Filter by transfer type."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["pending", "processing", "completed", "failed", "reversed"] },
+            "description": "Filter by status. Omit to return all statuses."
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["sent", "received", "all"], "default": "all" },
+            "description": "Filter by direction relative to the requesting user."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transfer list returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "array", "items": { "$ref": "#/components/schemas/TransactionDetail" } },
+                    "meta":    { "$ref": "#/components/schemas/PaginationMeta" },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/transfers/{id}": {
+      "get": {
+        "tags": ["Transfers"],
+        "operationId": "getTransfer",
+        "summary": "Get a transfer",
+        "description": "Fetch a single transaction by ID. Only the sender, receiver, or initiator can access a transaction. Use this to poll status for async bank transfers.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/TransactionId" }],
+        "responses": {
+          "200": {
+            "description": "Transaction returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/TransactionDetail" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/transfers/{id}/retry": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "retryBankTransfer",
+        "summary": "Retry a failed bank transfer",
+        "description": "Re-queue a bank transfer that is in `failed` status. The wallet is **not debited again** — the original debit is reused. Only the transfer's sender can retry it.\n\nRequires PIN re-verification to confirm the user's intent.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/TransactionId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["pin"],
+                "properties": {
+                  "pin": { "type": "string", "pattern": "^\\d{4}$" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transfer re-queued. Status is `pending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/BankTransferResult" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Transfer is not in `failed` status, or is not a bank transfer.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "Transfer cannot be retried in status: completed." } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
