@@ -169,6 +169,11 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
 
   // Issue new token pair
   const { raw: newRaw, hash: newHash } = generateRefreshToken();
+
+  // Sliding window expiry:
+  // On every active refresh, push the expiry forward by the full TTL.
+  // A user actively using the app will never be logged out.
+  // A user who stops using the app for longer than jwtRefreshTokenTtl will expire naturally.
   const newExpiresAt = new Date(Date.now() + cfg.jwtRefreshTokenTtl * 1000);
 
 
@@ -200,10 +205,15 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
     aud: cfg.jwtAudience,
   });
 
+  const accessTokenTtl = getAccessTokenExpiresIn();
+  const accessExpiresAt = new Date(Date.now() + accessTokenTtl * 1000);
+
   return {
-    access_token: accessToken,
-    refresh_token: newRaw,
-    expires_in: getAccessTokenExpiresIn(),
+    access_token:             accessToken,
+    refresh_token:            newRaw,
+    expires_in:               accessTokenTtl,
+    access_token_expires_at:  accessExpiresAt.toISOString(),
+    refresh_token_expires_at: newExpiresAt.toISOString(),
   };
 }
 

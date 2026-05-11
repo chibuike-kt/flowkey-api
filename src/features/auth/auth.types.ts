@@ -60,9 +60,11 @@ export interface AdminAccessTokenPayload {
 }
 
 export interface AuthTokens {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
+  access_token:            string;
+  refresh_token:           string;
+  expires_in:              number;   // seconds until access token expires
+  access_token_expires_at: string;   // ISO timestamp — use this to schedule proactive refresh
+  refresh_token_expires_at: string;  // ISO timestamp — session ends if refresh token expires
 }
 
 export interface UserProfileResult {
