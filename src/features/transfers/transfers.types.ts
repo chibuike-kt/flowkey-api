@@ -103,3 +103,6 @@ export interface BankProcessorResponse {
   bank_response_code?: string;
   failure_reason?: string;
 }
+
+
+
