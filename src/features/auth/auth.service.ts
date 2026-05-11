@@ -1,3 +1,15 @@
+/**
+ * FlowKey — Auth Service (v2)
+ *
+ * Registration flow:
+ *   1. initiate()     — phone or email → send OTP
+ *   2. verifyOtp()    — verify OTP → mark verified in Redis
+ *   3. checkUsername()— real-time availability check
+ *   4. complete()     — username + passcode → activate account, issue tokens
+ *
+ * Login: phone or email + passcode → tokens
+ */
+
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -8,6 +20,7 @@ import { generateOtp, verifyOtp } from './otp.service';
 import {
   createSession,
   rotateRefreshToken,
+  revokeSession,
   revokeOtherSessions,
   revokeAllSessions,
 } from './session.service';
@@ -676,6 +689,19 @@ export async function unlockWithPasscode(payload: {
         login_passcode_lockout_count: lockout.newLockoutCount,
       },
     });
+
+    // Hard lock reached — revoke this device session entirely.
+    // The user must go through full login (contact + passcode) to regain access.
+    // This prevents an attacker with a stolen device from brute-forcing the
+    // lock screen indefinitely even after the passcode lockout kicks in.
+    if (lockout.hardLocked) {
+      await revokeSession(payload.rawRefreshToken);
+      throw new AppError(
+        ErrorCode.ACCOUNT_LOCKED,
+        'Too many incorrect attempts. This session has been terminated for your security. Please log in again.',
+      );
+    }
+
     throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Incorrect passcode.');
   }
 

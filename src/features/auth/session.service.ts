@@ -10,9 +10,9 @@ import {
 } from './token.service';
 import type { AuthTokens } from './auth.types';
 
-
+// ---------------------------------------------------------------------------
 // Types
-
+// ---------------------------------------------------------------------------
 
 interface CreateSessionParams {
   userId: string;
@@ -30,9 +30,9 @@ interface RotateTokenParams {
   userAgent: string;
 }
 
-
+// ---------------------------------------------------------------------------
 // Session creation
-
+// ---------------------------------------------------------------------------
 
 /**
  * Create a new device session and issue token pair.
@@ -48,19 +48,19 @@ export async function createSession(params: CreateSessionParams): Promise<AuthTo
   const db = prisma as any;
 
   // Enforce session limit — silently revoke oldest if at limit
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const activeSessions = await db.deviceSession.findMany({
     where: { user_id: params.userId, is_revoked: false },
     orderBy: { created_at: 'asc' },
     select: { id: true },
   });
 
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (activeSessions.length >= cfg.maxSessionsPerUser) {
     // Revoke the oldest session to make room
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const oldest = activeSessions[0] as { id: string };
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     await db.deviceSession.update({
       where: { id: oldest.id },
       data: { is_revoked: true },
@@ -68,7 +68,7 @@ export async function createSession(params: CreateSessionParams): Promise<AuthTo
   }
 
   // Create new session
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const session = await db.deviceSession.create({
     data: {
       user_id: params.userId,
@@ -83,7 +83,7 @@ export async function createSession(params: CreateSessionParams): Promise<AuthTo
 
   const accessToken = issueAccessToken({
     sub: params.userId,
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     session_id: session.id as string,
     device_id: params.deviceId,
     tier: params.kyc_tier,
@@ -91,16 +91,21 @@ export async function createSession(params: CreateSessionParams): Promise<AuthTo
     aud: cfg.jwtAudience,
   });
 
+  const accessTokenTtl = getAccessTokenExpiresIn();
+  const accessExpiresAt = new Date(Date.now() + accessTokenTtl * 1000);
+
   return {
     access_token: accessToken,
     refresh_token: rawRefresh,
-    expires_in: getAccessTokenExpiresIn(),
+    expires_in: accessTokenTtl,
+    access_token_expires_at: accessExpiresAt.toISOString(),
+    refresh_token_expires_at: expiresAt.toISOString(),
   };
 }
 
-
+// ---------------------------------------------------------------------------
 // Token rotation
-
+// ---------------------------------------------------------------------------
 
 /**
  * Rotate a refresh token.
@@ -123,7 +128,7 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any;
 
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const session = await db.deviceSession.findUnique({
     where: { refresh_token: incomingHash },
     include: {
@@ -137,12 +142,12 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   }
 
   // Reuse detection — if session is already revoked, someone is replaying an old token
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (session.is_revoked) {
     // Revoke all sessions for this user on this device (family revocation)
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     await db.deviceSession.updateMany({
-
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       where: { user_id: session.user_id as string, device_id: session.device_id as string },
       data: { is_revoked: true },
     });
@@ -154,7 +159,7 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   }
 
   // Check session not expired
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (new Date(session.expires_at as string) < new Date()) {
     throw new AppError(ErrorCode.TOKEN_EXPIRED, 'Your session has expired. Please log in again.');
   }
@@ -162,7 +167,7 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   // Revoke old session
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.deviceSession.update({
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     where: { id: session.id as string },
     data: { is_revoked: true },
   });
@@ -176,28 +181,28 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   // A user who stops using the app for longer than jwtRefreshTokenTtl will expire naturally.
   const newExpiresAt = new Date(Date.now() + cfg.jwtRefreshTokenTtl * 1000);
 
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const newSession = await db.deviceSession.create({
     data: {
-
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       user_id: session.user_id as string,
       device_id: params.deviceId,
       refresh_token: newHash,
       ip_address: params.ipAddress,
       user_agent: params.userAgent,
-
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       fcm_token: session.fcm_token as string | null,
       expires_at: newExpiresAt,
     },
   });
 
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   const userTier = (session.user as { kyc_tier: number }).kyc_tier;
 
   const accessToken = issueAccessToken({
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     sub: session.user_id as string,
-
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     session_id: newSession.id as string,
     device_id: params.deviceId,
     tier: userTier,
@@ -209,17 +214,17 @@ export async function rotateRefreshToken(params: RotateTokenParams): Promise<Aut
   const accessExpiresAt = new Date(Date.now() + accessTokenTtl * 1000);
 
   return {
-    access_token:             accessToken,
-    refresh_token:            newRaw,
-    expires_in:               accessTokenTtl,
-    access_token_expires_at:  accessExpiresAt.toISOString(),
+    access_token: accessToken,
+    refresh_token: newRaw,
+    expires_in: accessTokenTtl,
+    access_token_expires_at: accessExpiresAt.toISOString(),
     refresh_token_expires_at: newExpiresAt.toISOString(),
   };
 }
 
-
+// ---------------------------------------------------------------------------
 // Session revocation
-
+// ---------------------------------------------------------------------------
 
 /**
  * Revoke a single session by its refresh token hash.
@@ -243,12 +248,12 @@ export async function revokeSession(rawRefreshToken: string): Promise<void> {
 export async function revokeAllSessions(userId: string): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any;
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const result = await db.deviceSession.updateMany({
     where: { user_id: userId, is_revoked: false },
     data: { is_revoked: true },
   });
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   return (result as { count: number }).count;
 }
 
@@ -263,7 +268,7 @@ export async function revokeOtherSessions(
 ): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any;
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const result = await db.deviceSession.updateMany({
     where: {
       user_id: userId,
@@ -272,7 +277,7 @@ export async function revokeOtherSessions(
     },
     data: { is_revoked: true },
   });
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   return (result as { count: number }).count;
 }
 
@@ -295,7 +300,7 @@ export async function revokeSessionById(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = prisma as any;
 
-
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const session = await db.deviceSession.findFirst({
     where: { id: sessionId, user_id: userId },
   });
@@ -311,9 +316,9 @@ export async function revokeSessionById(
   });
 }
 
-
+// ---------------------------------------------------------------------------
 // Session blocklist (Redis) for immediate revocation within access token TTL
-
+// ---------------------------------------------------------------------------
 
 /**
  * Add a session to the Redis blocklist.
