@@ -1,6 +1,19 @@
+/**
+ * FlowKey — Config Service
+ *
+ * Resolution order:
+ *   development / test: process.env (populated by dotenv in server.ts)
+ *   production:         AWS Secrets Manager → merged with process.env
+ *
+ * The config object is frozen after construction — no runtime mutation.
+ * All consumers import `config` from this module. Never read process.env directly.
+ */
+
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
+// ---------------------------------------------------------------------------
 // Types
+// ---------------------------------------------------------------------------
 
 export interface AppConfig {
   // Runtime
@@ -105,7 +118,9 @@ export interface AppConfig {
   logFormat: 'json' | 'pretty';
 }
 
+// ---------------------------------------------------------------------------
 // Helpers
+// ---------------------------------------------------------------------------
 
 function requireEnv(key: string): string {
   const value = process.env[key];
@@ -134,7 +149,9 @@ function envBool(key: string, fallback: boolean): boolean {
   return value.toLowerCase() === 'true' || value === '1';
 }
 
+// ---------------------------------------------------------------------------
 // AWS Secrets Manager resolver (production only)
+// ---------------------------------------------------------------------------
 
 async function resolveAwsSecrets(region: string, secretName: string): Promise<void> {
   const client = new SecretsManagerClient({ region });
@@ -167,7 +184,41 @@ async function resolveAwsSecrets(region: string, secretName: string): Promise<vo
   }
 }
 
+// ---------------------------------------------------------------------------
+// PEM key normalisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a PEM key from any environment format.
+ *
+ * Handles:
+ *   1. .env files with escaped newlines:  JWT_KEY="-----BEGIN...\\nMII...\\n-----END..."
+ *   2. Render / cloud UI with real newlines already in the value
+ *   3. AWS Secrets Manager (JSON-parsed — \\n already decoded to real newlines)
+ *   4. Single-line base64 with no newlines at all — body is re-chunked at 64 chars
+ */
+function normalizePemKey(raw: string): string {
+  // Unescape literal \n sequences (produced by .env files and some CI systems)
+  let pem = raw.replace(/\\n/g, '\n');
+
+  // If still no real newlines, the key is one continuous string — reconstruct it
+  if (!pem.includes('\n')) {
+    const match = pem.match(/^(-----BEGIN [^-]+-----)([A-Za-z0-9+/=]+)(-----END [^-]+-----)$/);
+    if (match) {
+      const header = match[1]!;
+      const body = match[2]!;
+      const footer = match[3]!;
+      const lines = body.match(/.{1,64}/g) ?? [body];
+      pem = [header, ...lines, footer].join('\n');
+    }
+  }
+
+  return pem.trim() + '\n';
+}
+
+// ---------------------------------------------------------------------------
 // Config builder
+// ---------------------------------------------------------------------------
 
 function buildConfig(): AppConfig {
   const nodeEnv = (process.env['NODE_ENV'] ?? 'development') as AppConfig['nodeEnv'];
@@ -190,8 +241,8 @@ function buildConfig(): AppConfig {
     redisKeyPrefix: process.env['REDIS_KEY_PREFIX'] ?? 'fk:',
 
     // JWT
-    jwtPrivateKey: requireEnv('JWT_PRIVATE_KEY').replace(/\\n/g, '\n'),
-    jwtPublicKey: requireEnv('JWT_PUBLIC_KEY').replace(/\\n/g, '\n'),
+    jwtPrivateKey: normalizePemKey(requireEnv('JWT_PRIVATE_KEY')),
+    jwtPublicKey: normalizePemKey(requireEnv('JWT_PUBLIC_KEY')),
     jwtAccessTokenTtl: envInt('JWT_ACCESS_TOKEN_TTL', 900),
     jwtRefreshTokenTtl: envInt('JWT_REFRESH_TOKEN_TTL', 2592000),
     jwtIssuer: process.env['JWT_ISSUER'] ?? 'flowkey-api',
@@ -283,7 +334,9 @@ function buildConfig(): AppConfig {
   return Object.freeze(config);
 }
 
+// ---------------------------------------------------------------------------
 // Exported singleton — set after init()
+// ---------------------------------------------------------------------------
 
 let _config: AppConfig | null = null;
 

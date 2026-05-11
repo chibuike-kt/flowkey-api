@@ -11,6 +11,11 @@ import type {
 
 const isProduction = process.env['NODE_ENV'] === 'production';
 
+/** Replace all colons with hyphens — BullMQ rejects jobIds containing ":" */
+function safeJobId(key: string): string {
+  return key.replace(/:/g, '-');
+}
+
 function handleQueueError(err: unknown, context: Record<string, unknown>): void {
   const message = err instanceof Error ? err.message : String(err);
   logger.error('Email queue: failed to enqueue job', { ...context, error: message });
@@ -26,7 +31,7 @@ function handleQueueError(err: unknown, context: Record<string, unknown>): void 
 }
 
 // ---------------------------------------------------------------------------
-// OTP email — timestamp in jobId prevents legitimate duplicate suppression
+// OTP email — timestamp suffix prevents legitimate duplicate suppression
 // ---------------------------------------------------------------------------
 
 export async function queueOtpEmail(
@@ -35,8 +40,8 @@ export async function queueOtpEmail(
   purpose: OtpEmailJob['purpose'],
   userId: string,
 ): Promise<void> {
-  const dedup_key = `otp:${userId}:${purpose}:${otp}`;
-  const jobId = `${dedup_key}:${Date.now()}`;
+  const dedup_key = `otp-${userId}-${purpose}-${otp}`;
+  const jobId = safeJobId(`${dedup_key}-${Date.now()}`);
   const payload: OtpEmailJob = { name: 'send-otp', to, otp, purpose, dedup_key };
 
   try {
@@ -51,7 +56,7 @@ export async function queueOtpEmail(
 }
 
 // ---------------------------------------------------------------------------
-// Welcome email — static jobId is fine (one welcome per user)
+// Welcome email — static jobId is fine (one welcome per user ever)
 // ---------------------------------------------------------------------------
 
 export async function queueWelcomeEmail(
@@ -59,11 +64,12 @@ export async function queueWelcomeEmail(
   username: string,
   userId: string,
 ): Promise<void> {
-  const dedup_key = `welcome:${userId}`;
+  const dedup_key = `welcome-${userId}`;
+  const jobId = safeJobId(dedup_key);
   const payload: WelcomeEmailJob = { name: 'send-welcome', to, username, dedup_key };
 
   try {
-    await emailQueue.add('send-welcome', payload, { jobId: dedup_key });
+    await emailQueue.add('send-welcome', payload, { jobId });
     logger.info('Email job queued: send-welcome', { userId, dedup_key });
   } catch (err) {
     handleQueueError(err, { dedup_key });
@@ -80,7 +86,8 @@ export async function queuePasscodeChangedEmail(
   userId: string,
   sessionId: string,
 ): Promise<void> {
-  const dedup_key = `passcode-changed:${userId}:${sessionId}`;
+  const dedup_key = `passcode-changed-${userId}-${sessionId}`;
+  const jobId = safeJobId(dedup_key);
   const payload: PasscodeChangedEmailJob = {
     name: 'send-passcode-changed',
     to,
@@ -89,7 +96,7 @@ export async function queuePasscodeChangedEmail(
   };
 
   try {
-    await emailQueue.add('send-passcode-changed', payload, { jobId: dedup_key });
+    await emailQueue.add('send-passcode-changed', payload, { jobId });
     logger.info('Email job queued: send-passcode-changed', { userId, dedup_key });
   } catch (err) {
     handleQueueError(err, { dedup_key });
@@ -107,7 +114,8 @@ export async function queueNewDeviceLoginEmail(
   deviceId: string,
   ipAddress: string,
 ): Promise<void> {
-  const dedup_key = `new-device:${userId}:${deviceId}`;
+  const dedup_key = `new-device-${userId}-${deviceId}`;
+  const jobId = safeJobId(dedup_key);
   const payload: NewDeviceLoginEmailJob = {
     name: 'send-new-device-login',
     to,
@@ -118,7 +126,7 @@ export async function queueNewDeviceLoginEmail(
   };
 
   try {
-    await emailQueue.add('send-new-device-login', payload, { jobId: dedup_key });
+    await emailQueue.add('send-new-device-login', payload, { jobId });
     logger.info('Email job queued: send-new-device-login', { userId, deviceId, dedup_key });
   } catch (err) {
     handleQueueError(err, { dedup_key });
@@ -137,7 +145,8 @@ export async function queueKycResultEmail(
   passed: boolean,
   failureReason?: string,
 ): Promise<void> {
-  const dedup_key = `kyc-result:${attemptId}`;
+  const dedup_key = `kyc-result-${attemptId}`;
+  const jobId = safeJobId(dedup_key);
   const payload: KycResultEmailJob = {
     name: 'send-kyc-result',
     to,
@@ -149,7 +158,7 @@ export async function queueKycResultEmail(
   };
 
   try {
-    await emailQueue.add('send-kyc-result', payload, { jobId: dedup_key });
+    await emailQueue.add('send-kyc-result', payload, { jobId });
     logger.info('Email job queued: send-kyc-result', { attemptId, passed, dedup_key });
   } catch (err) {
     handleQueueError(err, { dedup_key });
