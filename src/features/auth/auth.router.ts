@@ -21,6 +21,7 @@ router.post('/complete', authRateLimit, idempotencyCheck, C.completeRegistration
 // Session
 router.post('/login', authRateLimit, idempotencyCheck, C.login);
 router.post('/refresh', authRateLimit, C.refreshToken);
+router.post('/unlock', authRateLimit, idempotencyCheck, C.unlockWithPasscode);
 router.post('/logout', requireAuth, idempotencyCheck, C.logout);
 router.post('/logout-all', requireAuth, C.logoutAll);
 router.get('/me', requireAuth, userRateLimit, C.getMe);

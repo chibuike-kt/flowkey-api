@@ -161,6 +161,11 @@ export const RevokeUniversalIdSchema = z.object({
 export type InitiateRegistrationInput = z.infer<typeof InitiateRegistrationSchema>;
 export type VerifyOtpInput = z.infer<typeof VerifyOtpSchema>;
 export type CheckUsernameInput = z.infer<typeof CheckUsernameSchema>;
+export const UnlockSchema = z.object({
+  refresh_token:  z.string().min(1, 'Refresh token is required'),
+  login_passcode: z.string().regex(passcodeRegex, 'Passcode must be exactly 6 digits'),
+});
+
 export type CompleteRegistrationInput = z.infer<typeof CompleteRegistrationSchema>;
 export type ResendOtpInput = z.infer<typeof ResendOtpSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;

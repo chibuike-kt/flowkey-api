@@ -1,15 +1,3 @@
-/**
- * FlowKey — Auth Service (v2)
- *
- * Registration flow:
- *   1. initiate()     — phone or email → send OTP
- *   2. verifyOtp()    — verify OTP → mark verified in Redis
- *   3. checkUsername()— real-time availability check
- *   4. complete()     — username + passcode → activate account, issue tokens
- *
- * Login: phone or email + passcode → tokens
- */
-
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -17,15 +5,20 @@ import { redis } from '../../common/utils/redis';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
 import { generateOtp, verifyOtp } from './otp.service';
-import { createSession, revokeOtherSessions, revokeAllSessions } from './session.service';
+import {
+  createSession,
+  rotateRefreshToken,
+  revokeOtherSessions,
+  revokeAllSessions,
+} from './session.service';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from './lockout.service';
+import { hashRefreshToken } from './token.service';
 import {
   generateUniversalId,
   canRevokeUniversalId,
   nextRevocationAllowedAt,
 } from '../universal-id/universal-id.service';
-import { queueOtpEmail, queueWelcomeEmail } from '../../queues/email.queue';
-import { queueOtpSms } from '../../queues/sms.queue';
+import { sendOtpEmail, sendOtpSms, sendWelcomeEmail } from '../notifications/notification.service';
 import type {
   InitiateResult,
   CompleteRegistrationResult,
@@ -80,20 +73,50 @@ export async function initiateRegistration(
   // Check uniqueness
   if (contactType === 'phone') {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    const existing = await db.user.findUnique({ where: { phone: contact }, select: { id: true } });
-    if (existing)
-      throw new AppError(
-        ErrorCode.PHONE_ALREADY_REGISTERED,
-        'An account with this phone number already exists.',
-      );
+    const existing = (await db.user.findFirst({
+      where: { phone: contact },
+      select: { id: true, account_status: true },
+    })) as { id: string; account_status: string } | null;
+    if (existing) {
+      if (existing.account_status === 'active') {
+        throw new AppError(
+          ErrorCode.PHONE_ALREADY_REGISTERED,
+          'An account with this phone number already exists.',
+        );
+      }
+      // Pending registration exists — reuse it, generate a fresh OTP and resend
+      const cfg = config();
+      const otp = await generateOtp(existing.id, contactType);
+      await sendOtpSms(contact, otp);
+      return {
+        registration_id: existing.id,
+        contact_type: contactType,
+        otp_expires_at: new Date(Date.now() + cfg.otpTtlSeconds * 1000),
+      };
+    }
   } else {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    const existing = await db.user.findUnique({ where: { email: contact }, select: { id: true } });
-    if (existing)
-      throw new AppError(
-        ErrorCode.EMAIL_ALREADY_REGISTERED,
-        'An account with this email address already exists.',
-      );
+    const existing = (await db.user.findFirst({
+      where: { email: contact },
+      select: { id: true, account_status: true },
+    })) as { id: string; account_status: string } | null;
+    if (existing) {
+      if (existing.account_status === 'active') {
+        throw new AppError(
+          ErrorCode.EMAIL_ALREADY_REGISTERED,
+          'An account with this email address already exists.',
+        );
+      }
+      // Pending registration exists — reuse it, generate a fresh OTP and resend
+      const cfg = config();
+      const otp = await generateOtp(existing.id, contactType);
+      await sendOtpEmail(contact, otp, 'Verify your email address');
+      return {
+        registration_id: existing.id,
+        contact_type: contactType,
+        otp_expires_at: new Date(Date.now() + cfg.otpTtlSeconds * 1000),
+      };
+    }
   }
 
   // Create pending user
@@ -114,20 +137,30 @@ export async function initiateRegistration(
   const userId = (user as { id: string }).id;
   const otp = await generateOtp(userId, contactType);
 
-  // Queue OTP delivery — API never waits for delivery result
+  // Send OTP — capture result for environment-aware error handling
   const cfg = config();
+  let delivery: import('../notifications/notification.service').NotificationResult;
+
   if (contactType === 'email') {
-    await queueOtpEmail(contact, otp, 'Verify your email address', userId);
+    delivery = await sendOtpEmail(contact, otp, 'Verify your email address');
   } else {
-    await queueOtpSms(contact, otp, userId);
+    delivery = await sendOtpSms(contact, otp);
   }
 
-  // In dev, log OTP to console so QA can proceed without live email/SMS
-  if (cfg.isDevelopment) {
-    logger.info('DEV: OTP queued — logging for local testing', {
+  if (!delivery.success) {
+    if (cfg.isProduction) {
+      throw new AppError(
+        ErrorCode.EXTERNAL_SERVICE_ERROR,
+        'Failed to send verification code. Please try again.',
+      );
+    }
+    // Development fallback — log OTP so dev/QA can proceed without live email/SMS
+    logger.warn('DEV OTP fallback — delivery failed, OTP logged for local testing', {
       contact,
-      otp,
       contact_type: contactType,
+      otp,
+      delivery_error: delivery.error,
+      note: 'This log never appears in production.',
     });
   }
 
@@ -215,10 +248,24 @@ export async function completeRegistration(payload: {
     display_name: string | null;
   };
 
-  if (typedUser.registration_step !== 'otp_verified') {
+  if (typedUser.registration_step === 'active') {
+    throw new AppError(
+      ErrorCode.CONFLICT,
+      'This account has already been registered. Please log in.',
+    );
+  }
+
+  if (typedUser.registration_step === 'otp_pending') {
     throw new AppError(
       ErrorCode.CONFLICT,
       'Please verify your OTP before completing registration.',
+    );
+  }
+
+  if (typedUser.registration_step !== 'otp_verified') {
+    throw new AppError(
+      ErrorCode.CONFLICT,
+      'Invalid registration state. Please start registration again.',
     );
   }
 
@@ -312,7 +359,7 @@ export async function completeRegistration(payload: {
 
   // Send welcome email if registered via email
   if (typedUser.email) {
-    void queueWelcomeEmail(typedUser.email, typedActivated.username, typedActivated.id);
+    void sendWelcomeEmail(typedUser.email, typedActivated.username);
   }
 
   const tokens = await createSession({
@@ -502,6 +549,158 @@ export async function login(payload: {
 }
 
 // ---------------------------------------------------------------------------
+// Passcode unlock (screen-lock re-authentication)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-authenticate using only the passcode when the app screen-locks a session.
+ *
+ * Flow:
+ *   1. Validate refresh token → confirm session is live on this device
+ *   2. Verify passcode against that user's hash (full lockout check applies)
+ *   3. Rotate the refresh token and re-issue an access token
+ *
+ * This does NOT require contact type or OTP — the existing refresh token
+ * proves the device. The passcode proves the user. Together they prove
+ * "this person, on this device, right now."
+ */
+export async function unlockWithPasscode(payload: {
+  rawRefreshToken: string;
+  login_passcode: string;
+  device_id: string;
+  ip_address: string;
+  user_agent: string;
+}): Promise<AuthTokens> {
+  const incomingHash = hashRefreshToken(payload.rawRefreshToken);
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const session = (await db.deviceSession.findUnique({
+    where: { refresh_token: incomingHash },
+    select: {
+      id: true,
+      user_id: true,
+      device_id: true,
+      is_revoked: true,
+      expires_at: true,
+    },
+  })) as {
+    id: string;
+    user_id: string;
+    device_id: string;
+    is_revoked: boolean;
+    expires_at: Date;
+  } | null;
+
+  if (!session) {
+    throw new AppError(ErrorCode.SESSION_NOT_FOUND, 'Session not found. Please log in again.');
+  }
+  if (session.is_revoked) {
+    throw new AppError(ErrorCode.SESSION_REVOKED, 'Session has been revoked. Please log in again.');
+  }
+  if (session.expires_at < new Date()) {
+    throw new AppError(ErrorCode.TOKEN_EXPIRED, 'Session expired. Please log in again.');
+  }
+
+  const userId = session.user_id;
+
+  // Load user + auth in one query
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const user = (await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      kyc_tier: true,
+      account_status: true,
+      auth: {
+        select: {
+          login_passcode_hash: true,
+          login_passcode_failed_attempts: true,
+          login_passcode_locked_until: true,
+          login_passcode_hard_locked: true,
+          login_passcode_lockout_count: true,
+        },
+      },
+    },
+  })) as {
+    kyc_tier: number;
+    account_status: string;
+    auth: {
+      login_passcode_hash: string | null;
+      login_passcode_failed_attempts: number;
+      login_passcode_locked_until: Date | null;
+      login_passcode_hard_locked: boolean;
+      login_passcode_lockout_count: number;
+    } | null;
+  } | null;
+
+  if (!user || !user.auth?.login_passcode_hash) {
+    throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
+  }
+
+  if (user.account_status === 'frozen') {
+    throw new AppError(
+      ErrorCode.ACCOUNT_FROZEN,
+      'Your account has been frozen. Please contact support.',
+    );
+  }
+  if (user.account_status !== 'active') {
+    throw new AppError(ErrorCode.UNAUTHORIZED, 'Account is not active.');
+  }
+
+  const auth = user.auth;
+
+  // Lockout check — same rules as login
+  await assertNotLocked(userId, 'passcode', () =>
+    Promise.resolve({
+      hard_locked: auth.login_passcode_hard_locked,
+      locked_until: auth.login_passcode_locked_until,
+    }),
+  );
+
+  // Verify passcode
+  const isValid = await verifyValue(auth.login_passcode_hash as string, payload.login_passcode);
+
+  if (!isValid) {
+    const lockout = await recordFailedAttempt(
+      userId,
+      'passcode',
+      auth.login_passcode_failed_attempts,
+      auth.login_passcode_lockout_count,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    await db.userAuth.update({
+      where: { user_id: userId },
+      data: {
+        login_passcode_failed_attempts: lockout.newFailCount,
+        login_passcode_locked_until: lockout.lockedUntil,
+        login_passcode_hard_locked: lockout.hardLocked,
+        login_passcode_lockout_count: lockout.newLockoutCount,
+      },
+    });
+    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Incorrect passcode.');
+  }
+
+  // Passcode correct — clear lockout state
+  const cleared = await clearLockout(userId, 'passcode');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  await db.userAuth.update({
+    where: { user_id: userId },
+    data: {
+      login_passcode_failed_attempts: cleared.newFailCount,
+      login_passcode_locked_until: cleared.lockedUntil,
+      login_passcode_hard_locked: cleared.hardLocked,
+    },
+  });
+
+  // Rotate the existing session — same device, new token pair
+  return rotateRefreshToken({
+    rawRefreshToken: payload.rawRefreshToken,
+    deviceId: payload.device_id,
+    ipAddress: payload.ip_address,
+    userAgent: payload.user_agent,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Passcode management
 // ---------------------------------------------------------------------------
 
@@ -596,14 +795,27 @@ export async function initiateForgotPasscode(
 
   const otp = await generateOtp(u.id, contactType);
 
-  // Queue OTP delivery — fire and forget
-  if (contactType === 'email' && u.email) {
-    await queueOtpEmail(u.email, otp, 'Reset your passcode', u.id);
-  } else {
-    await queueOtpSms(contact, otp, u.id);
-  }
-  if (config().isDevelopment) {
-    logger.info('DEV: forgot passcode OTP queued', { contact, otp, contact_type: contactType });
+  // Send OTP — environment-aware delivery handling
+  const forgotDelivery =
+    contactType === 'email' && u.email
+      ? await sendOtpEmail(u.email, otp, 'Reset your passcode')
+      : await sendOtpSms(contact, otp);
+
+  const forgotCfg = config();
+  if (!forgotDelivery.success) {
+    if (forgotCfg.isProduction) {
+      throw new AppError(
+        ErrorCode.EXTERNAL_SERVICE_ERROR,
+        'Failed to send verification code. Please try again.',
+      );
+    }
+    logger.warn('DEV OTP fallback — passcode reset delivery failed, OTP logged for local testing', {
+      contact,
+      contact_type: contactType,
+      otp,
+      delivery_error: forgotDelivery.error,
+      note: 'This log never appears in production.',
+    });
   }
 
   const token = await generateResetToken(u.id);

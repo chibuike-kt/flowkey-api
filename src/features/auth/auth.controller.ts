@@ -1,8 +1,3 @@
-/**
- * FlowKey — Auth Controller
- * HTTP layer only. No business logic here.
- */
-
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -22,6 +17,7 @@ import {
   SetUppSchema,
   ChangeUppSchema,
   RevokeUniversalIdSchema,
+  UnlockSchema,
 } from './auth.schema';
 import * as AuthService from './auth.service';
 import * as SessionService from './session.service';
@@ -37,7 +33,9 @@ function ua(req: Request): string {
   return req.headers['user-agent'] ?? 'unknown';
 }
 
+// ---------------------------------------------------------------------------
 // Step 1 — Initiate registration
+// ---------------------------------------------------------------------------
 export async function initiateRegistration(
   req: Request,
   res: Response,
@@ -63,7 +61,9 @@ export async function initiateRegistration(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Step 2 — Verify OTP
+// ---------------------------------------------------------------------------
 export async function verifyRegistrationOtp(
   req: Request,
   res: Response,
@@ -91,7 +91,9 @@ export async function verifyRegistrationOtp(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Step 2b — Resend OTP
+// ---------------------------------------------------------------------------
 export async function resendRegistrationOtp(
   req: Request,
   res: Response,
@@ -119,7 +121,9 @@ export async function resendRegistrationOtp(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Step 3 — Check username availability
+// ---------------------------------------------------------------------------
 export async function checkUsername(
   req: Request,
   res: Response,
@@ -140,7 +144,9 @@ export async function checkUsername(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Step 4 — Complete registration
+// ---------------------------------------------------------------------------
 export async function completeRegistration(
   req: Request,
   res: Response,
@@ -163,7 +169,9 @@ export async function completeRegistration(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Login / Logout / Refresh / Me
+// ---------------------------------------------------------------------------
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = LoginSchema.parse(req.body);
@@ -192,6 +200,26 @@ export async function refreshToken(req: Request, res: Response, next: NextFuncti
       userAgent: ua(req),
     });
     res.status(200).json(successResponse(tokens));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function unlockWithPasscode(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const body = UnlockSchema.parse(req.body);
+    const tokens = await AuthService.unlockWithPasscode({
+      rawRefreshToken: body.refresh_token,
+      login_passcode: body.login_passcode,
+      device_id: (req.headers['x-device-id'] as string) ?? 'unknown',
+      ip_address: ip(req),
+      user_agent: ua(req),
+    });
+    res.json(successResponse(tokens));
   } catch (err) {
     next(err);
   }
@@ -265,7 +293,9 @@ export async function getMe(req: Request, res: Response, next: NextFunction): Pr
   }
 }
 
+// ---------------------------------------------------------------------------
 // Settings — Passcode
+// ---------------------------------------------------------------------------
 export async function changePasscode(
   req: Request,
   res: Response,
@@ -321,7 +351,9 @@ export async function resetPasscode(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Settings — Transaction PIN
+// ---------------------------------------------------------------------------
 export async function setTransactionPin(
   req: Request,
   res: Response,
@@ -364,7 +396,9 @@ export async function deleteTransactionPin(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Settings — Universal Payment PIN
+// ---------------------------------------------------------------------------
 export async function setUpp(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = SetUppSchema.parse(req.body);
@@ -385,7 +419,9 @@ export async function changeUpp(req: Request, res: Response, next: NextFunction)
   }
 }
 
+// ---------------------------------------------------------------------------
 // Settings — Universal ID revocation
+// ---------------------------------------------------------------------------
 export async function revokeUniversalId(
   req: Request,
   res: Response,
@@ -400,7 +436,9 @@ export async function revokeUniversalId(
   }
 }
 
+// ---------------------------------------------------------------------------
 // Settings — Sessions
+// ---------------------------------------------------------------------------
 export async function listSessions(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
