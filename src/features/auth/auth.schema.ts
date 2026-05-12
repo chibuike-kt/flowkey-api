@@ -124,7 +124,6 @@ export const ResetPasscodeSchema = z.object({
 });
 
 export const SetTransactionPinSchema = z.object({
-  login_passcode: z.string().regex(passcodeRegex),
   transaction_pin: z.string().regex(pinRegex, 'PIN must be exactly 4 digits'),
 });
 

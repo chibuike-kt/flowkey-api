@@ -1,9 +1,20 @@
+/**
+ * FlowKey — Auth Service (v2)
+ *
+ * Registration flow:
+ *   1. initiate()     — phone or email → send OTP
+ *   2. verifyOtp()    — verify OTP → mark verified in Redis
+ *   3. checkUsername()— real-time availability check
+ *   4. complete()     — username + passcode → activate account, issue tokens
+ *
+ * Login: phone or email + passcode → tokens
+ */
+
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
 import { redis } from '../../common/utils/redis';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
-import { logger } from '../../common/utils/logger';
 import { generateOtp, verifyOtp } from './otp.service';
 import {
   createSession,
@@ -19,7 +30,9 @@ import {
   canRevokeUniversalId,
   nextRevocationAllowedAt,
 } from '../universal-id/universal-id.service';
-import { sendOtpEmail, sendOtpSms, sendWelcomeEmail } from '../notifications/notification.service';
+import { sendWelcomeEmail } from '../notifications/notification.service';
+import { queueOtpEmail } from '../../queues/email.queue';
+import { queueOtpSms } from '../../queues/sms.queue';
 import type {
   InitiateResult,
   CompleteRegistrationResult,
@@ -88,7 +101,7 @@ export async function initiateRegistration(
       // Pending registration exists — reuse it, generate a fresh OTP and resend
       const cfg = config();
       const otp = await generateOtp(existing.id, contactType);
-      await sendOtpSms(contact, otp);
+      await queueOtpSms(contact, otp, existing.id);
       return {
         registration_id: existing.id,
         contact_type: contactType,
@@ -111,7 +124,7 @@ export async function initiateRegistration(
       // Pending registration exists — reuse it, generate a fresh OTP and resend
       const cfg = config();
       const otp = await generateOtp(existing.id, contactType);
-      await sendOtpEmail(contact, otp, 'Verify your email address');
+      await queueOtpEmail(contact, otp, 'Verify your email address', existing.id);
       return {
         registration_id: existing.id,
         contact_type: contactType,
@@ -138,31 +151,12 @@ export async function initiateRegistration(
   const userId = (user as { id: string }).id;
   const otp = await generateOtp(userId, contactType);
 
-  // Send OTP — capture result for environment-aware error handling
+  // Queue OTP delivery — worker handles SMTP/SMS with retries + dev fallback
   const cfg = config();
-  let delivery: import('../notifications/notification.service').NotificationResult;
-
   if (contactType === 'email') {
-    delivery = await sendOtpEmail(contact, otp, 'Verify your email address');
+    await queueOtpEmail(contact, otp, 'Verify your email address', userId);
   } else {
-    delivery = await sendOtpSms(contact, otp);
-  }
-
-  if (!delivery.success) {
-    if (cfg.isProduction) {
-      throw new AppError(
-        ErrorCode.EXTERNAL_SERVICE_ERROR,
-        'Failed to send verification code. Please try again.',
-      );
-    }
-    // Development fallback — log OTP so dev/QA can proceed without live email/SMS
-    logger.warn('DEV OTP fallback — delivery failed, OTP logged for local testing', {
-      contact,
-      contact_type: contactType,
-      otp,
-      delivery_error: delivery.error,
-      note: 'This log never appears in production.',
-    });
+    await queueOtpSms(contact, otp, userId);
   }
 
   return {
@@ -809,27 +803,11 @@ export async function initiateForgotPasscode(
 
   const otp = await generateOtp(u.id, contactType);
 
-  // Send OTP — environment-aware delivery handling
-  const forgotDelivery =
-    contactType === 'email' && u.email
-      ? await sendOtpEmail(u.email, otp, 'Reset your passcode')
-      : await sendOtpSms(contact, otp);
-
-  const forgotCfg = config();
-  if (!forgotDelivery.success) {
-    if (forgotCfg.isProduction) {
-      throw new AppError(
-        ErrorCode.EXTERNAL_SERVICE_ERROR,
-        'Failed to send verification code. Please try again.',
-      );
-    }
-    logger.warn('DEV OTP fallback — passcode reset delivery failed, OTP logged for local testing', {
-      contact,
-      contact_type: contactType,
-      otp,
-      delivery_error: forgotDelivery.error,
-      note: 'This log never appears in production.',
-    });
+  // Queue OTP delivery — worker handles SMTP/SMS with retries + dev fallback
+  if (contactType === 'email' && u.email) {
+    await queueOtpEmail(u.email, otp, 'Reset your passcode', u.id);
+  } else {
+    await queueOtpSms(contact, otp, u.id);
   }
 
   const token = await generateResetToken(u.id);
@@ -889,28 +867,33 @@ export async function resetPasscode(payload: {
 // Transaction PIN
 // ---------------------------------------------------------------------------
 
-export async function setTransactionPin(
-  userId: string,
-  loginPasscode: string,
-  pin: string,
-): Promise<void> {
+export async function setTransactionPin(userId: string, pin: string): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  const auth = await db.userAuth.findUnique({
+  const auth = (await db.userAuth.findUnique({
     where: { user_id: userId },
-    select: { login_passcode_hash: true, transaction_pin_hash: true },
-  });
+    select: { transaction_pin_hash: true },
+  })) as { transaction_pin_hash: string | null } | null;
+
   if (!auth) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
-  const a = auth as { login_passcode_hash: string | null; transaction_pin_hash: string | null };
-  if (!a.login_passcode_hash) throw new AppError(ErrorCode.NOT_FOUND, 'No passcode set.');
-  if (a.transaction_pin_hash)
-    throw new AppError(ErrorCode.CONFLICT, 'PIN already set. Use change PIN.');
-  if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
-    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
+  if (auth.transaction_pin_hash) {
+    throw new AppError(ErrorCode.CONFLICT, 'PIN already set. Use the reset flow to change it.');
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.userAuth.update({
     where: { user_id: userId },
     data: { transaction_pin_hash: await hashValue(pin) },
   });
+}
+
+export async function getTransactionPinStatus(userId: string): Promise<{ pin_set: boolean }> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const auth = (await db.userAuth.findUnique({
+    where: { user_id: userId },
+    select: { transaction_pin_hash: true },
+  })) as { transaction_pin_hash: string | null } | null;
+
+  return { pin_set: !!auth?.transaction_pin_hash };
 }
 
 // ---------------------------------------------------------------------------
@@ -939,9 +922,9 @@ export async function initiatePinReset(
   await redis.set(`pin_reset_token:${resetToken}`, userId, 'EX', 15 * 60);
 
   if (contactType === 'phone') {
-    await sendOtpSms(contact, otp);
+    await queueOtpSms(contact, otp, userId);
   } else {
-    await sendOtpEmail(contact, otp, 'Reset your passcode');
+    await queueOtpEmail(contact, otp, 'Reset your PIN', userId);
   }
 
   return { reset_token: resetToken, expires_at: new Date(Date.now() + 15 * 60 * 1000) };

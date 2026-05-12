@@ -17,6 +17,7 @@ router.post('/passcode/forgot', forgotPasscodeRateLimit, idempotencyCheck, C.for
 router.post('/passcode/reset', authRateLimit, idempotencyCheck, C.resetPasscode);
 
 // Transaction PIN
+router.get('/pin/status', requireAuth, C.getTransactionPinStatus);
 router.post('/pin/set', requireAuth, authRateLimit, idempotencyCheck, C.setTransactionPin);
 router.post('/pin/reset/initiate', requireAuth, otpRateLimit, C.initiatePinReset);
 router.post('/pin/reset/confirm', requireAuth, otpRateLimit, C.confirmPinResetOtp);

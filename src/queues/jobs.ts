@@ -1,3 +1,10 @@
+/**
+ * FlowKey — Job Type Definitions
+ *
+ * Shared job payload types across all queues.
+ * Every job has a deduplication key to prevent duplicate delivery.
+ */
+
 // ---------------------------------------------------------------------------
 // Email jobs
 // ---------------------------------------------------------------------------
@@ -13,7 +20,11 @@ export interface OtpEmailJob {
   name: 'send-otp';
   to: string;
   otp: string;
-  purpose: 'Verify your email address' | 'Verify your phone' | 'Reset your passcode';
+  purpose:
+    | 'Verify your email address'
+    | 'Verify your phone'
+    | 'Reset your passcode'
+    | 'Reset your PIN';
   /** Deduplication key — prevents duplicate OTP emails within TTL window */
   dedup_key: string; // format: `otp:{userId}:{purpose}:{otp}`
 }
@@ -97,10 +108,10 @@ export interface PushJob {
 
 export type PushJobPayload = PushJob;
 
+// ---------------------------------------------------------------------------
+// Bank transfer jobs (Phase 9)
+// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Bank transfer webhook jobs
-// ---------------------------------------------------------------------------
 export interface ProcessBankTransferJobData {
   transactionId: string;
   reference: string;

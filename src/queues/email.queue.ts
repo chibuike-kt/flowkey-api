@@ -1,3 +1,16 @@
+/**
+ * FlowKey — Email Queue Helpers
+ *
+ * All callers use these functions — never import emailQueue directly.
+ * Each helper:
+ *   - Wraps queue.add in try/catch — never crashes the API
+ *   - In dev: logs fallback and continues
+ *   - In production: throws AppError(EXTERNAL_SERVICE_ERROR)
+ *   - Uses timestamp suffix on OTP jobIds to avoid legitimate deduplication
+ *
+ * BullMQ constraint: jobIds cannot contain ":". All dedup_keys use "-" as separator.
+ */
+
 import { emailQueue } from './index';
 import { logger } from '../common/utils/logger';
 import { AppError, ErrorCode } from '../common/errors/AppError';
@@ -49,7 +62,18 @@ export async function queueOtpEmail(
     logger.info('Email job queued: send-otp', { userId, purpose, dedup_key, jobId });
   } catch (err) {
     if (!isProduction) {
-      logger.warn('DEV OTP fallback — email queue failed', { to, otp, purpose, dedup_key });
+      // ─────────────────────────────────────────────────────────────────────
+      // DEV FALLBACK — queue unavailable (Redis not running?)
+      // OTP is logged in plain text so testing can continue without Redis.
+      // This block NEVER executes in production.
+      // ─────────────────────────────────────────────────────────────────────
+      logger.warn('═══════════════════════════════════════════════════════');
+      logger.warn('DEV OTP FALLBACK — queue unavailable, logging OTP here');
+      logger.warn(`  to:      ${to}`);
+      logger.warn(`  purpose: ${purpose}`);
+      logger.warn(`  OTP:     ${otp}`);
+      logger.warn('═══════════════════════════════════════════════════════');
+      return; // continue — don't throw in dev
     }
     handleQueueError(err, { dedup_key, jobId });
   }

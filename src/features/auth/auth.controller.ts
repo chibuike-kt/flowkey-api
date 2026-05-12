@@ -366,8 +366,21 @@ export async function setTransactionPin(
 ): Promise<void> {
   try {
     const body = SetTransactionPinSchema.parse(req.body);
-    await AuthService.setTransactionPin(req.user!.sub, body.login_passcode, body.transaction_pin);
+    await AuthService.setTransactionPin(req.user!.sub as string, body.transaction_pin);
     res.status(200).json(successResponse({ pin_set: true }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getTransactionPinStatus(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const result = await AuthService.getTransactionPinStatus(req.user!.sub as string);
+    res.json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
   }
