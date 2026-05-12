@@ -1,15 +1,3 @@
-/**
- * FlowKey — Auth Service (v2)
- *
- * Registration flow:
- *   1. initiate()     — phone or email → send OTP
- *   2. verifyOtp()    — verify OTP → mark verified in Redis
- *   3. checkUsername()— real-time availability check
- *   4. complete()     — username + passcode → activate account, issue tokens
- *
- * Login: phone or email + passcode → tokens
- */
-
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -925,90 +913,95 @@ export async function setTransactionPin(
   });
 }
 
-export async function changeTransactionPin(
+// ---------------------------------------------------------------------------
+// Transaction PIN reset — 3-step OTP flow
+// ---------------------------------------------------------------------------
+
+export async function initiatePinReset(
   userId: string,
-  currentPin: string,
-  newPin: string,
-): Promise<void> {
+): Promise<{ reset_token: string; expires_at: Date }> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  const auth = await db.userAuth.findUnique({
-    where: { user_id: userId },
-    select: {
-      transaction_pin_hash: true,
-      transaction_pin_failed_attempts: true,
-      transaction_pin_locked_until: true,
-      transaction_pin_hard_locked: true,
-      transaction_pin_lockout_count: true,
-    },
-  });
-  if (!auth) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
-  const a = auth as {
-    transaction_pin_hash: string | null;
-    transaction_pin_failed_attempts: number;
-    transaction_pin_locked_until: Date | null;
-    transaction_pin_hard_locked: boolean;
-    transaction_pin_lockout_count: number;
-  };
-  if (!a.transaction_pin_hash)
-    throw new AppError(ErrorCode.NOT_FOUND, 'No PIN set. Use set PIN first.');
-  await assertNotLocked(userId, 'pin', () =>
-    Promise.resolve({
-      hard_locked: a.transaction_pin_hard_locked,
-      locked_until: a.transaction_pin_locked_until,
-    }),
-  );
-  const isValid = await verifyValue(a.transaction_pin_hash, currentPin);
-  if (!isValid) {
-    const lockout = await recordFailedAttempt(
-      userId,
-      'pin',
-      a.transaction_pin_failed_attempts,
-      a.transaction_pin_lockout_count,
-    );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    await db.userAuth.update({
-      where: { user_id: userId },
-      data: {
-        transaction_pin_failed_attempts: lockout.newFailCount,
-        transaction_pin_locked_until: lockout.lockedUntil,
-        transaction_pin_hard_locked: lockout.hardLocked,
-        transaction_pin_lockout_count: lockout.newLockoutCount,
-      },
-    });
-    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Current PIN is incorrect.');
+  const user = (await db.user.findUnique({
+    where: { id: userId },
+    select: { phone: true, email: true, registration_channel: true },
+  })) as { phone: string | null; email: string | null; registration_channel: string | null } | null;
+
+  if (!user) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
+
+  const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
+  const contact = contactType === 'phone' ? user.phone : user.email;
+
+  if (!contact) throw new AppError(ErrorCode.NOT_FOUND, 'No contact on file to send OTP.');
+
+  const otp = await generateOtp(userId, contactType);
+  const resetToken = require('crypto').randomBytes(32).toString('hex') as string;
+
+  await redis.set(`pin_reset_token:${resetToken}`, userId, 'EX', 15 * 60);
+
+  if (contactType === 'phone') {
+    await sendOtpSms(contact, otp);
+  } else {
+    await sendOtpEmail(contact, otp, 'Reset your passcode');
   }
-  const cleared = await clearLockout(userId, 'pin');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  await db.userAuth.update({
-    where: { user_id: userId },
-    data: {
-      transaction_pin_hash: await hashValue(newPin),
-      transaction_pin_failed_attempts: cleared.newFailCount,
-      transaction_pin_locked_until: cleared.lockedUntil,
-      transaction_pin_hard_locked: cleared.hardLocked,
-    },
-  });
+
+  return { reset_token: resetToken, expires_at: new Date(Date.now() + 15 * 60 * 1000) };
 }
 
-export async function deleteTransactionPin(userId: string, loginPasscode: string): Promise<void> {
+export async function confirmPinResetOtp(params: {
+  reset_token: string;
+  otp: string;
+}): Promise<{ confirm_token: string; expires_at: Date }> {
+  const userId = await redis.get(`pin_reset_token:${params.reset_token}`);
+  if (!userId) {
+    throw new AppError(
+      ErrorCode.INVALID_TOKEN,
+      'Reset token is invalid or has expired. Please start again.',
+    );
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  const auth = await db.userAuth.findUnique({
-    where: { user_id: userId },
-    select: { login_passcode_hash: true },
-  });
-  if (!auth) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
-  const a = auth as { login_passcode_hash: string | null };
-  if (!a.login_passcode_hash) throw new AppError(ErrorCode.NOT_FOUND, 'No passcode set.');
-  if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
-    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
+  const user = (await db.user.findUnique({
+    where: { id: userId },
+    select: { registration_channel: true },
+  })) as { registration_channel: string | null } | null;
+
+  if (!user) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
+
+  const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
+
+  await verifyOtp(userId, contactType, params.otp);
+
+  await redis.del(`pin_reset_token:${params.reset_token}`);
+
+  const confirmToken = require('crypto').randomBytes(32).toString('hex') as string;
+  await redis.set(`pin_confirm_token:${confirmToken}`, userId, 'EX', 10 * 60);
+
+  return { confirm_token: confirmToken, expires_at: new Date(Date.now() + 10 * 60 * 1000) };
+}
+
+export async function completePinReset(params: {
+  confirm_token: string;
+  new_pin: string;
+}): Promise<void> {
+  const userId = await redis.get(`pin_confirm_token:${params.confirm_token}`);
+  if (!userId) {
+    throw new AppError(
+      ErrorCode.INVALID_TOKEN,
+      'Confirmation token is invalid or has expired. Please start again.',
+    );
+  }
+
+  await redis.del(`pin_confirm_token:${params.confirm_token}`);
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
-      transaction_pin_hash: null,
+      transaction_pin_hash: await hashValue(params.new_pin),
       transaction_pin_failed_attempts: 0,
       transaction_pin_locked_until: null,
       transaction_pin_hard_locked: false,
+      transaction_pin_lockout_count: 0,
     },
   });
 }

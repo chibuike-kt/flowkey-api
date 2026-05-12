@@ -1,3 +1,7 @@
+/**
+ * FlowKey — Auth Zod Schemas
+ */
+
 import { z } from 'zod';
 
 const phoneRegex = /^\+234[0-9]{10}$/;
@@ -124,19 +128,25 @@ export const SetTransactionPinSchema = z.object({
   transaction_pin: z.string().regex(pinRegex, 'PIN must be exactly 4 digits'),
 });
 
-export const ChangeTransactionPinSchema = z
-  .object({
-    current_pin: z.string().regex(pinRegex),
-    new_pin: z.string().regex(pinRegex),
-  })
-  .refine((d) => d.current_pin !== d.new_pin, {
-    message: 'New PIN must differ from current',
-    path: ['new_pin'],
-  });
-
-export const DeleteTransactionPinSchema = z.object({
-  login_passcode: z.string().regex(passcodeRegex),
+export const InitiatePinResetSchema = z.object({
+  // No body required — user is authenticated, we use their registered contact
 });
+
+export const ConfirmPinResetSchema = z.object({
+  otp: z.string().regex(/^\d{6}$/, 'OTP must be exactly 6 digits'),
+  reset_token: z.string().min(1, 'Reset token is required'),
+});
+
+export const CompletePinResetSchema = z
+  .object({
+    reset_token: z.string().min(1, 'Reset token is required'),
+    new_pin: z.string().regex(pinRegex, 'PIN must be exactly 4 digits'),
+    confirm_pin: z.string().regex(pinRegex, 'PIN must be exactly 4 digits'),
+  })
+  .refine((d) => d.new_pin === d.confirm_pin, {
+    message: 'PINs do not match',
+    path: ['confirm_pin'],
+  });
 
 export const SetUppSchema = z.object({
   login_passcode: z.string().regex(passcodeRegex),
@@ -162,7 +172,7 @@ export type InitiateRegistrationInput = z.infer<typeof InitiateRegistrationSchem
 export type VerifyOtpInput = z.infer<typeof VerifyOtpSchema>;
 export type CheckUsernameInput = z.infer<typeof CheckUsernameSchema>;
 export const UnlockSchema = z.object({
-  refresh_token:  z.string().min(1, 'Refresh token is required'),
+  refresh_token: z.string().min(1, 'Refresh token is required'),
   login_passcode: z.string().regex(passcodeRegex, 'Passcode must be exactly 6 digits'),
 });
 
@@ -175,7 +185,8 @@ export type ChangePasscodeInput = z.infer<typeof ChangePasscodeSchema>;
 export type ForgotPasscodeInput = z.infer<typeof ForgotPasscodeSchema>;
 export type ResetPasscodeInput = z.infer<typeof ResetPasscodeSchema>;
 export type SetTransactionPinInput = z.infer<typeof SetTransactionPinSchema>;
-export type ChangeTransactionPinInput = z.infer<typeof ChangeTransactionPinSchema>;
+export type ConfirmPinResetInput = z.infer<typeof ConfirmPinResetSchema>;
+export type CompletePinResetInput = z.infer<typeof CompletePinResetSchema>;
 export type SetUppInput = z.infer<typeof SetUppSchema>;
 export type ChangeUppInput = z.infer<typeof ChangeUppSchema>;
 export type RevokeUniversalIdInput = z.infer<typeof RevokeUniversalIdSchema>;

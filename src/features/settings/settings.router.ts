@@ -4,6 +4,7 @@ import { requireAuth } from '../../common/middleware/requireAuth';
 import {
   authRateLimit,
   forgotPasscodeRateLimit,
+  otpRateLimit,
   userRateLimit,
 } from '../../common/middleware/rateLimiter';
 import { idempotencyCheck } from '../../common/middleware/idempotency';
@@ -17,8 +18,15 @@ router.post('/passcode/reset', authRateLimit, idempotencyCheck, C.resetPasscode)
 
 // Transaction PIN
 router.post('/pin/set', requireAuth, authRateLimit, idempotencyCheck, C.setTransactionPin);
-router.post('/pin/change', requireAuth, authRateLimit, idempotencyCheck, C.changeTransactionPin);
-router.delete('/pin', requireAuth, idempotencyCheck, C.deleteTransactionPin);
+router.post('/pin/reset/initiate', requireAuth, otpRateLimit, C.initiatePinReset);
+router.post('/pin/reset/confirm', requireAuth, otpRateLimit, C.confirmPinResetOtp);
+router.post(
+  '/pin/reset/complete',
+  requireAuth,
+  authRateLimit,
+  idempotencyCheck,
+  C.completePinReset,
+);
 
 // Universal Payment PIN
 router.post('/upp/set', requireAuth, authRateLimit, idempotencyCheck, C.setUpp);

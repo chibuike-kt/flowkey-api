@@ -156,3 +156,5 @@ export async function getOtpTtl(userId: string, type: OtpType): Promise<number> 
   const ttl = await redis.ttl(key);
   return ttl > 0 ? ttl : 0;
 }
+
+

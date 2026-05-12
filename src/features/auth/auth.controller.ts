@@ -1,3 +1,8 @@
+/**
+ * FlowKey — Auth Controller
+ * HTTP layer only. No business logic here.
+ */
+
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -12,8 +17,8 @@ import {
   ForgotPasscodeSchema,
   ResetPasscodeSchema,
   SetTransactionPinSchema,
-  ChangeTransactionPinSchema,
-  DeleteTransactionPinSchema,
+  ConfirmPinResetSchema,
+  CompletePinResetSchema,
   SetUppSchema,
   ChangeUppSchema,
   RevokeUniversalIdSchema,
@@ -368,29 +373,55 @@ export async function setTransactionPin(
   }
 }
 
-export async function changeTransactionPin(
+export async function initiatePinReset(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
   try {
-    const body = ChangeTransactionPinSchema.parse(req.body);
-    await AuthService.changeTransactionPin(req.user!.sub, body.current_pin, body.new_pin);
-    res.status(200).json(successResponse({ changed: true }));
+    const result = await AuthService.initiatePinReset(req.user!.sub as string);
+    res.json(successResponse(result));
   } catch (err) {
     next(err);
   }
 }
 
-export async function deleteTransactionPin(
+export async function confirmPinResetOtp(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
   try {
-    const body = DeleteTransactionPinSchema.parse(req.body);
-    await AuthService.deleteTransactionPin(req.user!.sub, body.login_passcode);
-    res.status(200).json(successResponse({ deleted: true }));
+    const parsed = ConfirmPinResetSchema.safeParse(req.body);
+    if (!parsed.success)
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e) => e.message).join('; '),
+      );
+    const result = await AuthService.confirmPinResetOtp(parsed.data);
+    res.json(successResponse(result));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function completePinReset(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = CompletePinResetSchema.safeParse(req.body);
+    if (!parsed.success)
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e) => e.message).join('; '),
+      );
+    await AuthService.completePinReset({
+      confirm_token: parsed.data.reset_token,
+      new_pin: parsed.data.new_pin,
+    });
+    res.json(successResponse({ reset: true }));
   } catch (err) {
     next(err);
   }

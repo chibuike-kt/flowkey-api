@@ -1,19 +1,3 @@
-/**
- * FlowKey — Application Error System
- *
- * All errors thrown by service layer code must be AppError instances.
- * The error handler middleware in src/common/middleware/errorHandler.ts
- * converts AppErrors into the standard response envelope.
- *
- * Internal error codes are defined as an enum here and are the ONLY codes
- * exposed to the client. Raw database errors, stack traces, and provider
- * error messages are NEVER forwarded to the client.
- */
-
-// ---------------------------------------------------------------------------
-// Internal error code registry
-// ---------------------------------------------------------------------------
-
 export enum ErrorCode {
   // --- Generic ---
   INTERNAL_SERVER_ERROR = 'INTERNAL_SERVER_ERROR',
@@ -171,3 +155,6 @@ export class AppError extends Error {
     return error instanceof AppError;
   }
 }
+
+
+
