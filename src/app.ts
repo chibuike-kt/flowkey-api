@@ -12,16 +12,18 @@ import { settingsRouter } from './features/settings/settings.router';
 import { kycRouter } from './features/kyc/kyc.router';
 import { walletRouter } from './features/wallet/wallet.router';
 import { transfersRouter } from './features/transfers/transfers.router';
-// import { transferRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
 // import { billRouter } from './features/bills/bills.router';
 // import { qrRouter } from './features/qr/qr.router';
+import { depositsRouter } from './features/deposits/deposits.router';
+import { testDepositRouter } from './features/deposits/test-deposit.router'; // REMOVE FOR PRODUCTION
+import { cardsRouter } from './features/cards/cards.router';
+import { webhooksRouter } from './features/webhooks/webhooks.router';
 // import { botRouter } from './features/bot/bot.router';
 // import { notificationRouter } from './features/notifications/notifications.router';
 // import { receiptRouter } from './features/receipts/receipts.router';
 // import { disputeRouter } from './features/disputes/disputes.router';
 // import { adminRouter } from './features/admin/admin.router';
-// import { webhookRouter } from './features/webhooks/webhooks.router';
 
 export function createApp(): express.Application {
   const app = express();
@@ -90,12 +92,21 @@ export function createApp(): express.Application {
   // -------------------------------------------------------------------------
   const apiPrefix = `/api/${cfg.apiVersion}`;
 
-  // Phase 5 â€” Active routes
+  // Active routes
   app.use(`${apiPrefix}/auth`, authRouter);
   app.use(`${apiPrefix}/settings`, settingsRouter);
   app.use(`${apiPrefix}/kyc`, kycRouter);
   app.use(`${apiPrefix}/wallet`, walletRouter);
   app.use(`${apiPrefix}/transfers`, transfersRouter);
+  app.use(`${apiPrefix}/deposits`, depositsRouter);
+  // REMOVE FOR PRODUCTION — test funding endpoint
+  if (process.env['NODE_ENV'] !== 'production') {
+    app.use(`${apiPrefix}/test/deposit`, testDepositRouter);
+  }
+  app.use(`${apiPrefix}/cards`, cardsRouter);
+
+  // Webhooks ï¿½ separate prefix, raw body parsing
+  app.use('/webhooks/v1', webhooksRouter);
 
   // Remaining routers mounted as each phase completes:
   //   app.use(`${apiPrefix}/withdrawals`, withdrawalsRouter);

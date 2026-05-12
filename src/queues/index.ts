@@ -10,4 +10,5 @@ export const emailQueue = new Queue('email', queueOptions);
 export const smsQueue = new Queue('sms', queueOptions);
 export const pushQueue = new Queue('push', queueOptions);
 export const bankTransferQueue = new Queue('bank-transfer', queueOptions);
-export const bankReversalQueue = new Queue('bank-reversal', queueOptions);
+export const bankReversalQueue  = new Queue('bank-reversal',  queueOptions);
+export const cardDepositQueue   = new Queue('card-deposit',   queueOptions);

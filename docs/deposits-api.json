@@ -1,0 +1,769 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey Deposits API",
+    "version": "1.0.0",
+    "description": "Fund your FlowKey wallet via two channels:\n\n## Virtual Account (Providus NUBAN)\n\nEach user gets a dedicated 10-digit Providus bank account number. Anyone can transfer to this account from any Nigerian bank. FlowKey receives a webhook from Providus and credits the wallet automatically — no user action required after provisioning.\n\n```\nUser provisions account → shares account number → sender does bank transfer\n→ Providus webhooks FlowKey → wallet credited instantly\n```\n\n## Card Deposit (Paystack)\n\nUsers add debit/credit cards via the Paystack SDK (no raw card data touches FlowKey servers). Charging a saved card is async — the wallet is credited when Paystack confirms via webhook.\n\n```\nUser opens Paystack SDK in-app → enters card → SDK returns authorization_code\n→ POST /cards (saves token) → POST /deposits/card (charges token)\n→ Paystack webhooks FlowKey → wallet credited\n```\n\n**FlowKey never stores raw card numbers.** Only Paystack's reusable authorization code, plus last4, card type, bank, and expiry for display purposes.\n\n## Monetary values\n\nAll amounts in **kobo** (integer), returned as **strings**.\n`kobo / 100 = naira` — e.g. `\"500000\"` = ₦5,000.\n\n## Minimum deposit\n\n₦100 (10,000 kobo) for card deposits. No minimum for virtual account transfers.\n\n## Fees\n\nNo deposit fees currently. `fee_kobo` will always be `\"0\"` and `net_amount_kobo` equals `amount_kobo`.\n\n## Test deposits (non-production only)\n\nIn development and staging, `POST /test/deposit` instantly funds the wallet with any amount. This endpoint is disabled in production — see the Test Deposits section."
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://api.flowkey.app/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Virtual Account", "description": "Dedicated Providus NUBAN for bank transfer deposits" },
+    { "name": "Cards", "description": "Save and manage Paystack-tokenized cards" },
+    { "name": "Deposits", "description": "Deposit history and card deposit initiation" },
+    { "name": "Test", "description": "Development and staging only — instant wallet funding" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "KoboAmount": {
+        "type": "string",
+        "description": "Monetary amount in kobo, encoded as a string. Divide by 100 for naira.",
+        "examples": ["500000", "0", "10000"]
+      },
+      "VirtualAccount": {
+        "type": "object",
+        "description": "A dedicated Providus bank account number assigned to the user's wallet. Share this with anyone who needs to send money.",
+        "required": ["id", "wallet_id", "account_number", "account_name", "bank_name", "bank_code", "provider", "is_active", "created_at"],
+        "properties": {
+          "id":             { "type": "string", "format": "uuid" },
+          "wallet_id":      { "type": "string", "format": "uuid" },
+          "account_number": {
+            "type": "string",
+            "description": "10-digit NUBAN account number. Share this for bank transfers.",
+            "example": "9056347821"
+          },
+          "account_name": {
+            "type": "string",
+            "description": "The name registered on the virtual account.",
+            "example": "Kingsley Chibuike"
+          },
+          "bank_name":   { "type": "string", "example": "Providus Bank" },
+          "bank_code":   { "type": "string", "example": "101" },
+          "provider":    { "type": "string", "enum": ["providus"] },
+          "is_active":   { "type": "boolean" },
+          "created_at":  { "type": "string", "format": "date-time" }
+        },
+        "example": {
+          "id":             "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "wallet_id":      "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "account_number": "9056347821",
+          "account_name":   "Kingsley Chibuike",
+          "bank_name":      "Providus Bank",
+          "bank_code":      "101",
+          "provider":       "providus",
+          "is_active":      true,
+          "created_at":     "2026-05-12T10:00:00.000Z"
+        }
+      },
+      "SavedCard": {
+        "type": "object",
+        "description": "A saved payment card. FlowKey stores only the Paystack authorization token and display metadata — never the raw card number.",
+        "required": ["id", "user_id", "last4", "card_type", "bank", "expiry_month", "expiry_year", "is_default", "created_at"],
+        "properties": {
+          "id":           { "type": "string", "format": "uuid" },
+          "user_id":      { "type": "string", "format": "uuid" },
+          "last4":        { "type": "string", "pattern": "^\\d{4}$", "example": "4321" },
+          "card_type":    { "type": "string", "example": "visa", "description": "Card scheme: visa, mastercard, verve, etc." },
+          "bank":         { "type": "string", "example": "Access Bank" },
+          "expiry_month": { "type": "string", "pattern": "^(0[1-9]|1[0-2])$", "example": "08" },
+          "expiry_year":  { "type": "string", "pattern": "^\\d{4}$", "example": "2028" },
+          "is_default":   {
+            "type": "boolean",
+            "description": "Whether this is the default card. The default card is pre-selected in the deposit UI. Only one card can be default at a time."
+          },
+          "created_at":   { "type": "string", "format": "date-time" }
+        },
+        "example": {
+          "id":           "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "user_id":      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "last4":        "4321",
+          "card_type":    "visa",
+          "bank":         "Access Bank",
+          "expiry_month": "08",
+          "expiry_year":  "2028",
+          "is_default":   true,
+          "created_at":   "2026-05-12T10:00:00.000Z"
+        }
+      },
+      "DepositRecord": {
+        "type": "object",
+        "description": "A single deposit record — either a virtual account credit or a card deposit.",
+        "required": ["id", "wallet_id", "channel", "status", "amount_kobo", "fee_kobo", "net_amount_kobo", "reference", "created_at"],
+        "properties": {
+          "id":              { "type": "string", "format": "uuid" },
+          "wallet_id":       { "type": "string", "format": "uuid" },
+          "channel": {
+            "type": "string",
+            "enum": ["virtual_account", "card"],
+            "description": "How the deposit was made."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "completed", "failed"],
+            "description": "Virtual account deposits go straight to `completed`. Card deposits start as `pending` and update via Paystack webhook."
+          },
+          "amount_kobo":     { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":        { "$ref": "#/components/schemas/KoboAmount", "description": "Always `\"0\"` — no deposit fees." },
+          "net_amount_kobo": { "$ref": "#/components/schemas/KoboAmount", "description": "Amount credited to wallet. Always equals `amount_kobo` since fee is zero." },
+          "reference":       { "type": "string", "description": "Unique deposit reference. Format: `DEP-YYYYMMDD-XXXXXX`.", "example": "DEP-20260512-A1B2C3" },
+          "provider_ref":    { "type": "string", "nullable": true, "description": "Providus session ID or Paystack transaction ID. Set when the processor confirms." },
+          "narration":       { "type": "string", "nullable": true, "description": "Description of the deposit." },
+          "card_id":         { "type": "string", "format": "uuid", "nullable": true, "description": "The card used. Only present for `channel: card`." },
+          "created_at":      { "type": "string", "format": "date-time" },
+          "completed_at":    { "type": "string", "format": "date-time", "nullable": true, "description": "When the deposit reached a terminal state. Null while pending." }
+        },
+        "example": {
+          "id":              "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+          "wallet_id":       "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "channel":         "card",
+          "status":          "completed",
+          "amount_kobo":     "500000",
+          "fee_kobo":        "0",
+          "net_amount_kobo": "500000",
+          "reference":       "DEP-20260512-A1B2C3",
+          "provider_ref":    "PSK-1715515200000-AB1234",
+          "narration":       "Card deposit ****4321",
+          "card_id":         "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "created_at":      "2026-05-12T10:00:00.000Z",
+          "completed_at":    "2026-05-12T10:00:04.000Z"
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": { "type": "string", "format": "uuid", "nullable": true },
+          "limit":       { "type": "integer", "example": 20 }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data":    {},
+          "meta":    { "nullable": true },
+          "error":   { "nullable": true, "example": null }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required." } }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request validation failed.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Duplicate requests with the same key return the original response without re-executing."
+      }
+    }
+  },
+  "paths": {
+    "/deposits/virtual-account": {
+      "post": {
+        "tags": ["Virtual Account"],
+        "operationId": "provisionVirtualAccount",
+        "summary": "Provision virtual account",
+        "description": "Assign a dedicated Providus NUBAN to the user's wallet.\n\nIf the user already has a virtual account, this returns the existing one — calling it multiple times is safe.\n\nOnce provisioned, the user can share the `account_number` with anyone. When a bank transfer arrives at that account, Providus notifies FlowKey and the wallet is credited automatically — no further action needed from the user.\n\n**Production note:** In production this calls the Providus API. In development/staging it returns a stub account number.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "201": {
+            "description": "Virtual account provisioned (or existing account returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/VirtualAccount" } } }
+                  ]
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id":             "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                    "wallet_id":      "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                    "account_number": "9056347821",
+                    "account_name":   "Kingsley Chibuike",
+                    "bank_name":      "Providus Bank",
+                    "bank_code":      "101",
+                    "provider":       "providus",
+                    "is_active":      true,
+                    "created_at":     "2026-05-12T10:00:00.000Z"
+                  },
+                  "meta": null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "get": {
+        "tags": ["Virtual Account"],
+        "operationId": "getVirtualAccount",
+        "summary": "Get virtual account",
+        "description": "Fetch the user's existing virtual account. Returns `data: null` if not yet provisioned — show a 'Get account number' CTA in that case.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Virtual account returned, or null if not yet provisioned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    {
+                      "properties": {
+                        "data": {
+                          "oneOf": [
+                            { "$ref": "#/components/schemas/VirtualAccount" },
+                            { "type": "null" }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                "examples": {
+                  "provisioned": {
+                    "summary": "Account exists",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "id":             "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "wallet_id":      "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                        "account_number": "9056347821",
+                        "account_name":   "Kingsley Chibuike",
+                        "bank_name":      "Providus Bank",
+                        "bank_code":      "101",
+                        "provider":       "providus",
+                        "is_active":      true,
+                        "created_at":     "2026-05-12T10:00:00.000Z"
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "not_provisioned": {
+                    "summary": "No account yet — show CTA",
+                    "value": {
+                      "success": true,
+                      "data": null,
+                      "meta": null,
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/cards": {
+      "post": {
+        "tags": ["Cards"],
+        "operationId": "addCard",
+        "summary": "Save a card",
+        "description": "Save a Paystack-tokenized card after the user completes card entry via the Paystack SDK.\n\n## How the client flow works\n\n1. Open the Paystack SDK in-app (React Native / iOS / Android)\n2. User enters their card details in Paystack's secure native UI\n3. Paystack processes the card and returns an `authorization_code` plus card metadata\n4. Client calls this endpoint with that data\n5. FlowKey verifies the auth code with Paystack, then stores the token\n\n**FlowKey never receives raw card numbers.** Card data goes directly from the user's device to Paystack's servers. FlowKey only stores the authorization token and display metadata.\n\n## Duplicate detection\n\nIf the same card (same last4 + expiry) is already saved, returns `409 CONFLICT`.\n\n## Default card\n\nThe first card added is automatically set as default. Subsequent cards are not default unless `set_as_default: true` is passed.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["authorization_code", "last4", "card_type", "bank", "expiry_month", "expiry_year"],
+                "properties": {
+                  "authorization_code": {
+                    "type": "string",
+                    "description": "Paystack reusable authorization code from the SDK. Format: `AUTH_xxxxxxxxxx`.",
+                    "example": "AUTH_8dfhjsdf72"
+                  },
+                  "last4":         { "type": "string", "pattern": "^\\d{4}$", "example": "4321", "description": "Last 4 digits of the card. Passed from the Paystack SDK response." },
+                  "card_type":     { "type": "string", "example": "visa", "description": "Card scheme from Paystack SDK: visa, mastercard, verve, etc." },
+                  "bank":          { "type": "string", "example": "Access Bank", "description": "Issuing bank from Paystack SDK." },
+                  "expiry_month":  { "type": "string", "pattern": "^(0[1-9]|1[0-2])$", "example": "08" },
+                  "expiry_year":   { "type": "string", "pattern": "^\\d{4}$", "example": "2028" },
+                  "set_as_default": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Set this card as the default immediately."
+                  }
+                }
+              },
+              "example": {
+                "authorization_code": "AUTH_8dfhjsdf72",
+                "last4":              "4321",
+                "card_type":          "visa",
+                "bank":               "Access Bank",
+                "expiry_month":       "08",
+                "expiry_year":        "2028",
+                "set_as_default":     false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Card saved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/SavedCard" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "Card already saved, or authorization code invalid/not reusable.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "duplicate": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This card has already been added to your account." } }
+                  },
+                  "invalid_auth": {
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "Card could not be verified. Please try again or use a different card." } }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "get": {
+        "tags": ["Cards"],
+        "operationId": "listCards",
+        "summary": "List saved cards",
+        "description": "Returns all saved cards for the authenticated user. Default card is always first.\n\nNote: `authorization_code` is never returned — only display metadata.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Card list returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "array", "items": { "$ref": "#/components/schemas/SavedCard" } },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id":           "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                      "user_id":      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                      "last4":        "4321",
+                      "card_type":    "visa",
+                      "bank":         "Access Bank",
+                      "expiry_month": "08",
+                      "expiry_year":  "2028",
+                      "is_default":   true,
+                      "created_at":   "2026-05-12T10:00:00.000Z"
+                    },
+                    {
+                      "id":           "c0a80164-9ab1-4c3a-8e9b-1f2d3e4c5b6a",
+                      "user_id":      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                      "last4":        "8765",
+                      "card_type":    "mastercard",
+                      "bank":         "GTBank",
+                      "expiry_month": "03",
+                      "expiry_year":  "2027",
+                      "is_default":   false,
+                      "created_at":   "2026-05-10T08:00:00.000Z"
+                    }
+                  ],
+                  "meta": null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/cards/{id}": {
+      "delete": {
+        "tags": ["Cards"],
+        "operationId": "removeCard",
+        "summary": "Remove a card",
+        "description": "Remove a saved card permanently.\n\nIf the removed card was the default, the oldest remaining card is automatically promoted to default. If no cards remain, there is no default.\n\nOnly the owner can remove their cards.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Card ID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Card removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "type": "object", "properties": { "removed": { "type": "boolean", "example": true } } } } }
+                  ]
+                },
+                "example": { "success": true, "data": { "removed": true }, "meta": null, "error": null }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Card does not belong to this user.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/deposits": {
+      "get": {
+        "tags": ["Deposits"],
+        "operationId": "listDeposits",
+        "summary": "List deposit history",
+        "description": "Returns the authenticated user's deposit history, ordered by most recent first. Includes both virtual account and card deposits.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Pagination cursor from previous response `meta.next_cursor`."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["virtual_account", "card", "all"], "default": "all" },
+            "description": "Filter by deposit channel."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["pending", "completed", "failed"] },
+            "description": "Filter by status. Omit to return all statuses."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deposit list returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "array", "items": { "$ref": "#/components/schemas/DepositRecord" } },
+                    "meta":    { "$ref": "#/components/schemas/PaginationMeta" },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id":              "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                      "wallet_id":       "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                      "channel":         "virtual_account",
+                      "status":          "completed",
+                      "amount_kobo":     "1000000",
+                      "fee_kobo":        "0",
+                      "net_amount_kobo": "1000000",
+                      "reference":       "DEP-20260512-D4E5F6",
+                      "provider_ref":    "PRV-TXN-20260512-001",
+                      "narration":       "Transfer from GTBank",
+                      "card_id":         null,
+                      "created_at":      "2026-05-12T09:00:00.000Z",
+                      "completed_at":    "2026-05-12T09:00:01.000Z"
+                    },
+                    {
+                      "id":              "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+                      "wallet_id":       "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                      "channel":         "card",
+                      "status":          "completed",
+                      "amount_kobo":     "500000",
+                      "fee_kobo":        "0",
+                      "net_amount_kobo": "500000",
+                      "reference":       "DEP-20260512-A1B2C3",
+                      "provider_ref":    "PSK-1715515200000-AB1234",
+                      "narration":       "Card deposit ****4321",
+                      "card_id":         "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                      "created_at":      "2026-05-12T10:00:00.000Z",
+                      "completed_at":    "2026-05-12T10:00:04.000Z"
+                    }
+                  ],
+                  "meta": { "next_cursor": null, "limit": 20 },
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/deposits/card": {
+      "post": {
+        "tags": ["Deposits"],
+        "operationId": "initiateCardDeposit",
+        "summary": "Deposit via saved card",
+        "description": "Charge a saved card to fund the wallet.\n\nThe wallet is **not** funded immediately — the charge is processed asynchronously by Paystack. The response status will be `pending`. Poll `GET /deposits` or listen for push notifications for the final status.\n\n## Lifecycle\n\n```\nPOST /deposits/card → 201 { status: \"pending\" }\n  ↓ (Paystack processes, 2-5 seconds)\n  → status: \"completed\" (Paystack webhooks FlowKey → wallet credited)\n     OR\n  → status: \"failed\" (card declined — wallet not affected)\n```\n\n## PIN requirement\n\nTransaction PIN is required to authorize the charge. This prevents unauthorized charges if someone else picks up the device.\n\n## Minimum amount\n\n₦100 (10,000 kobo).",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["card_id", "amount_kobo", "pin"],
+                "properties": {
+                  "card_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "ID of the saved card to charge. Get this from `GET /cards`."
+                  },
+                  "amount_kobo": {
+                    "type": "integer",
+                    "minimum": 10000,
+                    "description": "Amount to deposit in kobo. Minimum 10,000 (₦100)."
+                  },
+                  "pin": {
+                    "type": "string",
+                    "pattern": "^\\d{4}$",
+                    "description": "User's 4-digit transaction PIN."
+                  }
+                }
+              },
+              "example": {
+                "card_id":     "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                "amount_kobo": 500000,
+                "pin":         "1234"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Deposit initiated. Status is `pending` — Paystack will confirm asynchronously.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessResponse" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/DepositRecord" } } }
+                  ]
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id":              "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+                    "wallet_id":       "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                    "channel":         "card",
+                    "status":          "pending",
+                    "amount_kobo":     "500000",
+                    "fee_kobo":        "0",
+                    "net_amount_kobo": "500000",
+                    "reference":       "DEP-20260512-A1B2C3",
+                    "provider_ref":    null,
+                    "narration":       "Card deposit ****4321",
+                    "card_id":         "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                    "created_at":      "2026-05-12T10:00:00.000Z",
+                    "completed_at":    null
+                  },
+                  "meta": null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Wrong PIN, or card does not belong to this user.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "INVALID_CREDENTIALS", "message": "Incorrect transaction PIN." } }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/test/deposit": {
+      "post": {
+        "tags": ["Test"],
+        "operationId": "testDeposit",
+        "summary": "Instant test deposit",
+        "description": "⚠️ **Development and staging only. Returns 403 in production.**\n\nInstantly fund the wallet with any amount — no card, no virtual account, no webhook. Use this during development to test wallet balance, transfers, and any feature that requires a funded wallet.\n\n## To remove for production\n1. Delete `src/features/deposits/test-deposit.router.ts`\n2. Remove the two lines in `src/app.ts` that import and mount `testDepositRouter`\n\nThe endpoint is also blocked at the handler level when `NODE_ENV=production`, as a second safety net.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount_kobo"],
+                "properties": {
+                  "amount_kobo": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "description": "Amount to credit in kobo. Minimum 100 (₦1).",
+                    "example": 5000000
+                  },
+                  "narration": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": "Optional label for this test deposit.",
+                    "example": "Test funding for transfer flow"
+                  }
+                }
+              },
+              "examples": {
+                "small": {
+                  "summary": "₦500",
+                  "value": { "amount_kobo": 50000, "narration": "Small test" }
+                },
+                "standard": {
+                  "summary": "₦50,000",
+                  "value": { "amount_kobo": 5000000 }
+                },
+                "large": {
+                  "summary": "₦1,000,000",
+                  "value": { "amount_kobo": 100000000, "narration": "Large balance test" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Wallet funded instantly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "reference":   { "type": "string", "example": "TEST-1715515200000-AB1C2D" },
+                        "amount_kobo": { "type": "string", "example": "5000000" },
+                        "narration":   { "type": "string", "example": "Test deposit — ₦50,000" },
+                        "status":      { "type": "string", "enum": ["completed"] },
+                        "note":        { "type": "string", "example": "This is a test deposit. Not available in production." }
+                      }
+                    },
+                    "meta":  { "nullable": true, "example": null },
+                    "error": { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "reference":   "TEST-1715515200000-AB1C2D",
+                    "amount_kobo": "5000000",
+                    "narration":   "Test deposit — ₦50,000",
+                    "status":      "completed",
+                    "note":        "This is a test deposit. Not available in production."
+                  },
+                  "meta":  null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Endpoint disabled in production.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "FORBIDDEN", "message": "Test deposits are not available in production." } }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    }
+  }
+}
