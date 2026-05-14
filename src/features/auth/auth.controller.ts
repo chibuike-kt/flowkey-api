@@ -1,8 +1,3 @@
-/**
- * FlowKey — Auth Controller
- * HTTP layer only. No business logic here.
- */
-
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -20,7 +15,8 @@ import {
   ConfirmPinResetSchema,
   CompletePinResetSchema,
   SetUppSchema,
-  ChangeUppSchema,
+  ConfirmUppResetSchema,
+  CompleteUppResetSchema,
   RevokeUniversalIdSchema,
   UnlockSchema,
 } from './auth.schema';
@@ -443,21 +439,74 @@ export async function completePinReset(
 // ---------------------------------------------------------------------------
 // Settings — Universal Payment PIN
 // ---------------------------------------------------------------------------
+export async function getUppStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const result = await AuthService.getUppStatus(req.user!.sub as string);
+    res.json({ success: true, data: result, meta: null, error: null });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function setUpp(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const body = SetUppSchema.parse(req.body);
-    await AuthService.setUpp(req.user!.sub, body.login_passcode, body.upp);
+    await AuthService.setUpp(req.user!.sub as string, body.upp);
     res.status(200).json(successResponse({ upp_set: true }));
   } catch (err) {
     next(err);
   }
 }
 
-export async function changeUpp(req: Request, res: Response, next: NextFunction): Promise<void> {
+export async function initiateUppReset(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   try {
-    const body = ChangeUppSchema.parse(req.body);
-    await AuthService.changeUpp(req.user!.sub, body.current_upp, body.new_upp);
-    res.status(200).json(successResponse({ changed: true }));
+    const result = await AuthService.initiateUppReset(req.user!.sub as string);
+    res.json(successResponse(result));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function confirmUppResetOtp(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = ConfirmUppResetSchema.safeParse(req.body);
+    if (!parsed.success)
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
+      );
+    const result = await AuthService.confirmUppResetOtp(parsed.data);
+    res.json(successResponse(result));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function completeUppReset(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = CompleteUppResetSchema.safeParse(req.body);
+    if (!parsed.success)
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
+      );
+    await AuthService.completeUppReset({
+      confirm_token: parsed.data.reset_token,
+      new_upp: parsed.data.new_upp,
+    });
+    res.json(successResponse({ reset: true }));
   } catch (err) {
     next(err);
   }

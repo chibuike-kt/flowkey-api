@@ -21,17 +21,14 @@ router.get('/pin/status', requireAuth, C.getTransactionPinStatus);
 router.post('/pin/set', requireAuth, authRateLimit, idempotencyCheck, C.setTransactionPin);
 router.post('/pin/reset/initiate', requireAuth, otpRateLimit, C.initiatePinReset);
 router.post('/pin/reset/confirm', requireAuth, otpRateLimit, C.confirmPinResetOtp);
-router.post(
-  '/pin/reset/complete',
-  requireAuth,
-  authRateLimit,
-  idempotencyCheck,
-  C.completePinReset,
-);
+router.post('/pin/reset/complete', authRateLimit, idempotencyCheck, C.completePinReset);
 
 // Universal Payment PIN
+router.get('/upp/status', requireAuth, C.getUppStatus);
 router.post('/upp/set', requireAuth, authRateLimit, idempotencyCheck, C.setUpp);
-router.post('/upp/change', requireAuth, authRateLimit, idempotencyCheck, C.changeUpp);
+router.post('/upp/reset/initiate', requireAuth, otpRateLimit, C.initiateUppReset);
+router.post('/upp/reset/confirm', requireAuth, otpRateLimit, C.confirmUppResetOtp);
+router.post('/upp/reset/complete', authRateLimit, idempotencyCheck, C.completeUppReset);
 
 // Universal ID
 router.post(

@@ -1,7 +1,3 @@
-/**
- * FlowKey — Auth Zod Schemas
- */
-
 import { z } from 'zod';
 
 const phoneRegex = /^\+234[0-9]{10}$/;
@@ -148,18 +144,27 @@ export const CompletePinResetSchema = z
   });
 
 export const SetUppSchema = z.object({
-  login_passcode: z.string().regex(passcodeRegex),
   upp: z.string().regex(uppRegex, 'Universal Payment PIN must be exactly 6 digits'),
 });
 
-export const ChangeUppSchema = z
+export const InitiateUppResetSchema = z.object({
+  // No body required — OTP sent to registered contact
+});
+
+export const ConfirmUppResetSchema = z.object({
+  otp: z.string().regex(/^\d{6}$/, 'OTP must be exactly 6 digits'),
+  reset_token: z.string().min(1, 'Reset token is required'),
+});
+
+export const CompleteUppResetSchema = z
   .object({
-    current_upp: z.string().regex(uppRegex),
-    new_upp: z.string().regex(uppRegex),
+    reset_token: z.string().min(1, 'Reset token is required'),
+    new_upp: z.string().regex(uppRegex, 'Universal Payment PIN must be exactly 6 digits'),
+    confirm_upp: z.string().regex(uppRegex, 'Universal Payment PIN must be exactly 6 digits'),
   })
-  .refine((d) => d.current_upp !== d.new_upp, {
-    message: 'New UPP must differ from current',
-    path: ['new_upp'],
+  .refine((d) => d.new_upp === d.confirm_upp, {
+    message: 'PINs do not match',
+    path: ['confirm_upp'],
   });
 
 export const RevokeUniversalIdSchema = z.object({
@@ -187,5 +192,6 @@ export type SetTransactionPinInput = z.infer<typeof SetTransactionPinSchema>;
 export type ConfirmPinResetInput = z.infer<typeof ConfirmPinResetSchema>;
 export type CompletePinResetInput = z.infer<typeof CompletePinResetSchema>;
 export type SetUppInput = z.infer<typeof SetUppSchema>;
-export type ChangeUppInput = z.infer<typeof ChangeUppSchema>;
+export type ConfirmUppResetInput = z.infer<typeof ConfirmUppResetSchema>;
+export type CompleteUppResetInput = z.infer<typeof CompleteUppResetSchema>;
 export type RevokeUniversalIdInput = z.infer<typeof RevokeUniversalIdSchema>;

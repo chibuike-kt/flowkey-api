@@ -1,20 +1,3 @@
-/**
- * FlowKey — Universal ID Service v2
- *
- * Format: WORD-XX-NNNN
- *   Segment 1: 4–6 letter word from curated wordlist
- *   Segment 2: 2 cryptographically random uppercase letters (A-Z)
- *   Segment 3: 4-digit zero-padded cryptographically random number
- *
- * Address space: ~1098 × 676 × 10,000 = ~7.4 billion combinations
- *
- * Universal IDs are:
- *   - Auto-generated at account activation (user does not choose)
- *   - Used by the owner to authenticate payments on foreign devices
- *   - Revocable once per 24 hours; old IDs permanently retired
- *   - Never reassigned to another user
- */
-
 import { randomInt } from 'crypto';
 import { WORDLIST, WORDLIST_SIZE } from '../../data/universal-id-wordlist';
 import { logger } from '../../common/utils/logger';

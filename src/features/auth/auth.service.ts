@@ -1,15 +1,3 @@
-/**
- * FlowKey — Auth Service (v2)
- *
- * Registration flow:
- *   1. initiate()     — phone or email → send OTP
- *   2. verifyOtp()    — verify OTP → mark verified in Redis
- *   3. checkUsername()— real-time availability check
- *   4. complete()     — username + passcode → activate account, issue tokens
- *
- * Login: phone or email + passcode → tokens
- */
-
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -1053,19 +1041,21 @@ export async function verifyTransactionPin(userId: string, pin: string): Promise
 // Universal Payment PIN (UPP)
 // ---------------------------------------------------------------------------
 
-export async function setUpp(userId: string, loginPasscode: string, upp: string): Promise<void> {
+export async function setUpp(userId: string, upp: string): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  const auth = await db.userAuth.findUnique({
+  const auth = (await db.userAuth.findUnique({
     where: { user_id: userId },
-    select: { login_passcode_hash: true, upp_hash: true },
-  });
+    select: { upp_hash: true },
+  })) as { upp_hash: string | null } | null;
+
   if (!auth) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
-  const a = auth as { login_passcode_hash: string | null; upp_hash: string | null };
-  if (!a.login_passcode_hash) throw new AppError(ErrorCode.NOT_FOUND, 'No passcode set.');
-  if (a.upp_hash)
-    throw new AppError(ErrorCode.CONFLICT, 'Universal Payment PIN already set. Use change UPP.');
-  if (!(await verifyValue(a.login_passcode_hash, loginPasscode)))
-    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Login passcode is incorrect.');
+  if (auth.upp_hash) {
+    throw new AppError(
+      ErrorCode.CONFLICT,
+      'Universal Payment PIN already set. Use the reset flow to change it.',
+    );
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.userAuth.update({
     where: { user_id: userId },
@@ -1073,58 +1063,105 @@ export async function setUpp(userId: string, loginPasscode: string, upp: string)
   });
 }
 
-export async function changeUpp(userId: string, currentUpp: string, newUpp: string): Promise<void> {
+// ---------------------------------------------------------------------------
+// UPP reset — 3-step OTP flow (mirrors PIN reset)
+// ---------------------------------------------------------------------------
+
+export async function getUppStatus(userId: string): Promise<{ upp_set: boolean }> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  const auth = await db.userAuth.findUnique({
+  const auth = (await db.userAuth.findUnique({
     where: { user_id: userId },
-    select: {
-      upp_hash: true,
-      upp_failed_attempts: true,
-      upp_locked_until: true,
-      upp_hard_locked: true,
-      upp_lockout_count: true,
-    },
-  });
-  if (!auth) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
-  const a = auth as {
-    upp_hash: string | null;
-    upp_failed_attempts: number;
-    upp_locked_until: Date | null;
-    upp_hard_locked: boolean;
-    upp_lockout_count: number;
-  };
-  if (!a.upp_hash) throw new AppError(ErrorCode.NOT_FOUND, 'No UPP set. Use set UPP first.');
-  await assertNotLocked(userId, 'passcode', () =>
-    Promise.resolve({ hard_locked: a.upp_hard_locked, locked_until: a.upp_locked_until }),
-  );
-  const isValid = await verifyValue(a.upp_hash, currentUpp);
-  if (!isValid) {
-    const lockout = await recordFailedAttempt(
-      userId,
-      'passcode',
-      a.upp_failed_attempts,
-      a.upp_lockout_count,
-    );
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    await db.userAuth.update({
-      where: { user_id: userId },
-      data: {
-        upp_failed_attempts: lockout.newFailCount,
-        upp_locked_until: lockout.lockedUntil,
-        upp_hard_locked: lockout.hardLocked,
-        upp_lockout_count: lockout.newLockoutCount,
-      },
-    });
-    throw new AppError(ErrorCode.INVALID_CREDENTIALS, 'Current UPP is incorrect.');
+    select: { upp_hash: true },
+  })) as { upp_hash: string | null } | null;
+
+  return { upp_set: !!auth?.upp_hash };
+}
+
+export async function initiateUppReset(
+  userId: string,
+): Promise<{ reset_token: string; expires_at: Date }> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const user = (await db.user.findUnique({
+    where: { id: userId },
+    select: { phone: true, email: true, registration_channel: true },
+  })) as { phone: string | null; email: string | null; registration_channel: string | null } | null;
+
+  if (!user) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
+
+  const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
+  const contact = contactType === 'phone' ? user.phone : user.email;
+
+  if (!contact) throw new AppError(ErrorCode.NOT_FOUND, 'No contact on file to send OTP.');
+
+  const otp = await generateOtp(userId, contactType);
+  const resetToken = require('crypto').randomBytes(32).toString('hex') as string;
+
+  await redis.set(`upp_reset_token:${resetToken}`, userId, 'EX', 15 * 60);
+
+  if (contactType === 'phone') {
+    await queueOtpSms(contact, otp, userId);
+  } else {
+    await queueOtpEmail(contact, otp, 'Reset your passcode', userId);
   }
+
+  return { reset_token: resetToken, expires_at: new Date(Date.now() + 15 * 60 * 1000) };
+}
+
+export async function confirmUppResetOtp(params: {
+  reset_token: string;
+  otp: string;
+}): Promise<{ confirm_token: string; expires_at: Date }> {
+  const userId = await redis.get(`upp_reset_token:${params.reset_token}`);
+  if (!userId) {
+    throw new AppError(
+      ErrorCode.INVALID_TOKEN,
+      'Reset token is invalid or has expired. Please start again.',
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const user = (await db.user.findUnique({
+    where: { id: userId },
+    select: { registration_channel: true },
+  })) as { registration_channel: string | null } | null;
+
+  if (!user) throw new AppError(ErrorCode.NOT_FOUND, 'User not found.');
+
+  const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
+
+  await verifyOtp(userId, contactType, params.otp);
+
+  await redis.del(`upp_reset_token:${params.reset_token}`);
+
+  const confirmToken = require('crypto').randomBytes(32).toString('hex') as string;
+  await redis.set(`upp_confirm_token:${confirmToken}`, userId, 'EX', 10 * 60);
+
+  return { confirm_token: confirmToken, expires_at: new Date(Date.now() + 10 * 60 * 1000) };
+}
+
+export async function completeUppReset(params: {
+  confirm_token: string;
+  new_upp: string;
+}): Promise<void> {
+  const userId = await redis.get(`upp_confirm_token:${params.confirm_token}`);
+  if (!userId) {
+    throw new AppError(
+      ErrorCode.INVALID_TOKEN,
+      'Confirmation token is invalid or has expired. Please start again.',
+    );
+  }
+
+  await redis.del(`upp_confirm_token:${params.confirm_token}`);
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   await db.userAuth.update({
     where: { user_id: userId },
     data: {
-      upp_hash: await hashValue(newUpp),
+      upp_hash: await hashValue(params.new_upp),
       upp_failed_attempts: 0,
       upp_locked_until: null,
       upp_hard_locked: false,
+      upp_lockout_count: 0,
     },
   });
 }
