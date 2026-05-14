@@ -1,12 +1,3 @@
-/**
- * FlowKey — Universal ID Wordlist v2.0
- * Format: WORD-XX-NNNN
- * Segment 1: 4–6 letter word from this list
- * Segment 2: 2 random uppercase letters (26² = 676)
- * Segment 3: 4-digit zero-padded number (10,000)
- * Address space: ~600 × 676 × 10,000 = ~4 billion
- */
-
 const RAW: readonly string[] = [
   // 4-letter words
   'ABLE',

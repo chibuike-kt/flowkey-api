@@ -14,10 +14,11 @@ import { walletRouter } from './features/wallet/wallet.router';
 import { transfersRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
 // import { billRouter } from './features/bills/bills.router';
-// import { qrRouter } from './features/qr/qr.router';
+import { qrRouter } from './features/qr/qr.router';
 import { depositsRouter } from './features/deposits/deposits.router';
 import { testDepositRouter } from './features/deposits/test-deposit.router'; // REMOVE FOR PRODUCTION
 import { cardsRouter } from './features/cards/cards.router';
+import { beneficiariesRouter } from './features/beneficiaries/beneficiaries.router';
 import { webhooksRouter } from './features/webhooks/webhooks.router';
 // import { botRouter } from './features/bot/bot.router';
 // import { notificationRouter } from './features/notifications/notifications.router';
@@ -99,26 +100,22 @@ export function createApp(): express.Application {
   app.use(`${apiPrefix}/wallet`, walletRouter);
   app.use(`${apiPrefix}/transfers`, transfersRouter);
   app.use(`${apiPrefix}/deposits`, depositsRouter);
-  // REMOVE FOR PRODUCTION � test funding endpoint
+  // REMOVE FOR PRODUCTION � test funding endpoint
   if (process.env['NODE_ENV'] !== 'production') {
     app.use(`${apiPrefix}/test/deposit`, testDepositRouter);
   }
   app.use(`${apiPrefix}/cards`, cardsRouter);
+  app.use(`${apiPrefix}/beneficiaries`, beneficiariesRouter);
+  app.use(`${apiPrefix}/qr`, qrRouter);
 
-  // Webhooks � separate prefix, raw body parsing
+    // Webhooks � separate prefix, raw body parsing
   app.use('/webhooks/v1', webhooksRouter);
 
   // Remaining routers mounted as each phase completes:
   //   app.use(`${apiPrefix}/withdrawals`, withdrawalsRouter);
   //   etc.
 
-  // -------------------------------------------------------------------------
-  // Webhook routes — separate router, HMAC middleware applied at router level
-  // Webhooks are on /webhooks/v1, NOT under /api/v1
-  // -------------------------------------------------------------------------
-  // app.use('/webhooks/v1', webhookRouter);
-
-  // -------------------------------------------------------------------------
+  //-------------------------------------------------------------------------
   // 404 handler — must come AFTER all valid routes
   // -------------------------------------------------------------------------
   app.use(notFoundHandler);

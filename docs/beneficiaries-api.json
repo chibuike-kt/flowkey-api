@@ -1,0 +1,562 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey Beneficiaries API",
+    "version": "1.0.0",
+    "description": "Save and manage payment targets so users can transfer money quickly without looking up recipients every time.\n\n## Two beneficiary types\n\n**Internal** — a FlowKey user identified by their `wallet_id`. Once saved, transfers to them can be pre-filled automatically.\n\n**Bank** — an external Nigerian bank account (NUBAN). Requires `bank_code`, `bank_name`, `account_number` (10 digits), and `account_name`.\n\n## Account number masking\n\nFor security, account numbers are masked in the list view (`****6789`) but returned in full on the detail endpoint (`GET /beneficiaries/:id`). Use the detail endpoint when you need the full number to pre-fill a transfer form.\n\n## Duplicate detection\n\n- Bank: same `account_number` + `bank_code` → `409 CONFLICT`\n- Internal: same FlowKey user already saved → `409 CONFLICT`\n- Self-add (adding yourself) → `409 CONFLICT`\n\n## Account details are immutable\n\nOnly `nickname` can be updated after creation. To correct account details, delete and re-add.\n\n## Soft delete\n\nDeleted beneficiaries are soft-deleted (`deleted_at` set). They never appear in list results but are preserved for audit purposes."
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://flowkey-api.onrender.com/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Beneficiaries", "description": "Save, list, update and delete beneficiaries" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "BeneficiaryType": {
+        "type": "string",
+        "enum": ["internal", "bank"],
+        "description": "`internal` — a FlowKey user. `bank` — an external Nigerian bank account."
+      },
+      "Beneficiary": {
+        "type": "object",
+        "description": "Full beneficiary detail. Account number is unmasked on this object.",
+        "required": ["id", "user_id", "type", "account_verified", "created_at", "updated_at"],
+        "properties": {
+          "id":                   { "type": "string", "format": "uuid" },
+          "user_id":              { "type": "string", "format": "uuid", "description": "The user who owns this beneficiary entry." },
+          "type":                 { "$ref": "#/components/schemas/BeneficiaryType" },
+          "nickname":             { "type": "string", "nullable": true, "maxLength": 50, "example": "Kingsley at GTBank" },
+          "recipient_user_id":    { "type": "string", "format": "uuid", "nullable": true, "description": "Set for `internal` type. The FlowKey user ID of the recipient." },
+          "recipient_name":       { "type": "string", "nullable": true, "description": "Set for `internal` type. Display name of the recipient FlowKey user." },
+          "bank_code":            { "type": "string", "nullable": true, "example": "058", "description": "Set for `bank` type. CBN bank code." },
+          "bank_name":            { "type": "string", "nullable": true, "example": "Guaranty Trust Bank", "description": "Set for `bank` type." },
+          "account_number":       { "type": "string", "nullable": true, "example": "0123456789", "description": "Set for `bank` type. Full 10-digit NUBAN — unmasked on this detail object." },
+          "account_name":         { "type": "string", "nullable": true, "example": "Kingsley Chibuike", "description": "Set for `bank` type. Name on the bank account." },
+          "account_verified":     { "type": "boolean", "description": "Whether the account details have been verified. Always true for internal; true for bank when account_name was confirmed." },
+          "account_verified_at":  { "type": "string", "format": "date-time", "nullable": true },
+          "created_at":           { "type": "string", "format": "date-time" },
+          "updated_at":           { "type": "string", "format": "date-time" }
+        }
+      },
+      "BeneficiaryListItem": {
+        "type": "object",
+        "description": "Beneficiary as it appears in a list. Account number is masked to last 4 digits.",
+        "required": ["id", "type", "display_name", "display_sub", "account_verified", "created_at"],
+        "properties": {
+          "id":                { "type": "string", "format": "uuid" },
+          "type":              { "$ref": "#/components/schemas/BeneficiaryType" },
+          "nickname":          { "type": "string", "nullable": true },
+          "display_name": {
+            "type": "string",
+            "description": "Computed display name. Priority: nickname → account_name (bank) or recipient_name (internal) → 'Unknown'.",
+            "example": "Kingsley at GTBank"
+          },
+          "display_sub": {
+            "type": "string",
+            "description": "Computed subtitle. For bank: '<bank_name> ****<last4>'. For internal: recipient's display name.",
+            "example": "Guaranty Trust Bank ****6789"
+          },
+          "recipient_user_id": { "type": "string", "format": "uuid", "nullable": true },
+          "bank_code":         { "type": "string", "nullable": true, "example": "058" },
+          "bank_name":         { "type": "string", "nullable": true, "example": "Guaranty Trust Bank" },
+          "account_number":    { "type": "string", "nullable": true, "example": "****6789", "description": "Masked to last 4 digits. Use GET /beneficiaries/:id for the full number." },
+          "account_name":      { "type": "string", "nullable": true, "example": "Kingsley Chibuike" },
+          "account_verified":  { "type": "boolean" },
+          "created_at":        { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": { "type": "string", "format": "uuid", "nullable": true, "description": "Pass as `cursor` in the next request to get the next page. Null means no more pages." },
+          "limit":       { "type": "integer", "example": 50 }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer token.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "UNAUTHORIZED", "message": "Authentication required." } }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Beneficiary not found or does not belong to this user.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "success": false, "data": null, "meta": null, "error": { "code": "NOT_FOUND", "message": "Beneficiary not found." } }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request validation failed.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Duplicate beneficiary or self-add attempt.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/beneficiaries": {
+      "post": {
+        "tags": ["Beneficiaries"],
+        "operationId": "addBeneficiary",
+        "summary": "Add a beneficiary",
+        "description": "Save a new payment target. The request body is a discriminated union on `type`.\n\n## Internal (FlowKey user)\n\nPass `recipient_wallet_id` — the wallet ID of the FlowKey user you want to save. You can get this from the transfer lookup flow.\n\n## Bank (external account)\n\nPass the full Nigerian bank account details. `account_number` must be exactly 10 digits. `bank_code` is the CBN-assigned bank code (e.g. `058` for GTBank, `011` for First Bank).\n\n## Nickname\n\nOptional on both types. If not provided, the `display_name` in list responses falls back to the account name or recipient name.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "title": "Internal beneficiary",
+                    "type": "object",
+                    "required": ["type", "recipient_wallet_id"],
+                    "properties": {
+                      "type":                 { "type": "string", "enum": ["internal"] },
+                      "recipient_wallet_id":  { "type": "string", "format": "uuid", "description": "Wallet ID of the FlowKey user to save." },
+                      "nickname":             { "type": "string", "minLength": 1, "maxLength": 50, "description": "Optional label shown in your beneficiary list." }
+                    }
+                  },
+                  {
+                    "title": "Bank beneficiary",
+                    "type": "object",
+                    "required": ["type", "bank_code", "bank_name", "account_number", "account_name"],
+                    "properties": {
+                      "type":           { "type": "string", "enum": ["bank"] },
+                      "bank_code":      { "type": "string", "minLength": 3, "maxLength": 10, "description": "CBN bank code.", "example": "058" },
+                      "bank_name":      { "type": "string", "minLength": 2, "maxLength": 100, "example": "Guaranty Trust Bank" },
+                      "account_number": { "type": "string", "pattern": "^\\d{10}$", "description": "10-digit NUBAN account number.", "example": "0123456789" },
+                      "account_name":   { "type": "string", "minLength": 2, "maxLength": 100, "description": "Name on the bank account as returned by your bank lookup.", "example": "Kingsley Chibuike" },
+                      "nickname":       { "type": "string", "minLength": 1, "maxLength": 50, "description": "Optional label." }
+                    }
+                  }
+                ],
+                "discriminator": { "propertyName": "type" }
+              },
+              "examples": {
+                "internal": {
+                  "summary": "Save a FlowKey user",
+                  "value": {
+                    "type": "internal",
+                    "recipient_wallet_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                    "nickname": "Kingsley"
+                  }
+                },
+                "bank": {
+                  "summary": "Save a bank account",
+                  "value": {
+                    "type": "bank",
+                    "bank_code": "058",
+                    "bank_name": "Guaranty Trust Bank",
+                    "account_number": "0123456789",
+                    "account_name": "Kingsley Chibuike",
+                    "nickname": "Kingsley GTBank"
+                  }
+                },
+                "bank_no_nickname": {
+                  "summary": "Save a bank account without nickname",
+                  "value": {
+                    "type": "bank",
+                    "bank_code": "011",
+                    "bank_name": "First Bank",
+                    "account_number": "3012345678",
+                    "account_name": "Adaeze Okafor"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Beneficiary saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "$ref": "#/components/schemas/Beneficiary" },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "examples": {
+                  "internal": {
+                    "summary": "Internal beneficiary created",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "id":               "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                        "user_id":          "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "type":             "internal",
+                        "nickname":         "Kingsley",
+                        "recipient_user_id":"9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                        "recipient_name":   "Kingsley Chibuike",
+                        "bank_code":        null,
+                        "bank_name":        null,
+                        "account_number":   null,
+                        "account_name":     null,
+                        "account_verified": true,
+                        "account_verified_at": "2026-05-12T10:00:00.000Z",
+                        "created_at":       "2026-05-12T10:00:00.000Z",
+                        "updated_at":       "2026-05-12T10:00:00.000Z"
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  },
+                  "bank": {
+                    "summary": "Bank beneficiary created",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "id":               "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+                        "user_id":          "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "type":             "bank",
+                        "nickname":         "Kingsley GTBank",
+                        "recipient_user_id":null,
+                        "recipient_name":   null,
+                        "bank_code":        "058",
+                        "bank_name":        "Guaranty Trust Bank",
+                        "account_number":   "0123456789",
+                        "account_name":     "Kingsley Chibuike",
+                        "account_verified": true,
+                        "account_verified_at": "2026-05-12T10:00:00.000Z",
+                        "created_at":       "2026-05-12T10:00:00.000Z",
+                        "updated_at":       "2026-05-12T10:00:00.000Z"
+                      },
+                      "meta": null,
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "Recipient wallet not found (internal type only).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": { "success": false, "data": null, "meta": null, "error": { "code": "NOT_FOUND", "message": "Recipient not found." } }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate beneficiary or self-add.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "examples": {
+                  "duplicate_bank": {
+                    "summary": "Bank account already saved",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This bank account is already in your beneficiaries." } }
+                  },
+                  "duplicate_internal": {
+                    "summary": "FlowKey user already saved",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "This FlowKey user is already in your beneficiaries." } }
+                  },
+                  "self_add": {
+                    "summary": "Trying to add yourself",
+                    "value": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "You cannot add yourself as a beneficiary." } }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "get": {
+        "tags": ["Beneficiaries"],
+        "operationId": "listBeneficiaries",
+        "summary": "List beneficiaries",
+        "description": "Returns the authenticated user's saved beneficiaries, ordered by most recently added first.\n\nAccount numbers are masked to the last 4 digits in this response. Use `GET /beneficiaries/:id` to get the full account number when pre-filling a transfer.\n\n## Search\n\nThe `search` query searches across nickname, account name, recipient name, and bank name. Case-insensitive.\n\n## Pagination\n\nCursor-based. Pass `meta.next_cursor` as `cursor` in the next request. When `next_cursor` is null there are no more pages.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["internal", "bank", "all"], "default": "all" },
+            "description": "Filter by beneficiary type."
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": { "type": "string", "maxLength": 100 },
+            "description": "Search across nickname, account name, recipient name, bank name."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Pagination cursor from previous response `meta.next_cursor`."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Beneficiary list returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "array", "items": { "$ref": "#/components/schemas/BeneficiaryListItem" } },
+                    "meta":    { "$ref": "#/components/schemas/PaginationMeta" },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id":               "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+                      "type":             "bank",
+                      "nickname":         "Kingsley GTBank",
+                      "display_name":     "Kingsley GTBank",
+                      "display_sub":      "Guaranty Trust Bank ****6789",
+                      "recipient_user_id":null,
+                      "bank_code":        "058",
+                      "bank_name":        "Guaranty Trust Bank",
+                      "account_number":   "****6789",
+                      "account_name":     "Kingsley Chibuike",
+                      "account_verified": true,
+                      "created_at":       "2026-05-12T10:00:00.000Z"
+                    },
+                    {
+                      "id":               "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+                      "type":             "internal",
+                      "nickname":         "Kingsley",
+                      "display_name":     "Kingsley",
+                      "display_sub":      "Kingsley Chibuike",
+                      "recipient_user_id":"9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+                      "bank_code":        null,
+                      "bank_name":        null,
+                      "account_number":   null,
+                      "account_name":     null,
+                      "account_verified": true,
+                      "created_at":       "2026-05-11T08:00:00.000Z"
+                    }
+                  ],
+                  "meta": { "next_cursor": null, "limit": 50 },
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/beneficiaries/{id}": {
+      "get": {
+        "tags": ["Beneficiaries"],
+        "operationId": "getBeneficiary",
+        "summary": "Get beneficiary detail",
+        "description": "Returns full detail for a single beneficiary. For bank beneficiaries, `account_number` is returned **unmasked** — use this when pre-filling a transfer form.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "Beneficiary ID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Beneficiary returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "$ref": "#/components/schemas/Beneficiary" },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id":               "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+                    "user_id":          "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                    "type":             "bank",
+                    "nickname":         "Kingsley GTBank",
+                    "recipient_user_id":null,
+                    "recipient_name":   null,
+                    "bank_code":        "058",
+                    "bank_name":        "Guaranty Trust Bank",
+                    "account_number":   "0123456789",
+                    "account_name":     "Kingsley Chibuike",
+                    "account_verified": true,
+                    "account_verified_at": "2026-05-12T10:00:00.000Z",
+                    "created_at":       "2026-05-12T10:00:00.000Z",
+                    "updated_at":       "2026-05-12T10:00:00.000Z"
+                  },
+                  "meta": null,
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Beneficiaries"],
+        "operationId": "updateBeneficiary",
+        "summary": "Update beneficiary nickname",
+        "description": "Update the nickname on a saved beneficiary.\n\nOnly `nickname` can be changed — account details (bank code, account number, recipient wallet) are immutable after creation. To correct account details, delete and re-add the beneficiary.\n\nPass `null` to clear the nickname entirely, which causes `display_name` to fall back to the account name or recipient name.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["nickname"],
+                "properties": {
+                  "nickname": {
+                    "type": "string",
+                    "nullable": true,
+                    "minLength": 1,
+                    "maxLength": 50,
+                    "description": "New nickname. Pass `null` to clear."
+                  }
+                }
+              },
+              "examples": {
+                "set_nickname": {
+                  "summary": "Set a nickname",
+                  "value": { "nickname": "Kingsley Work Account" }
+                },
+                "clear_nickname": {
+                  "summary": "Clear the nickname",
+                  "value": { "nickname": null }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Beneficiary updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "$ref": "#/components/schemas/Beneficiary" },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "delete": {
+        "tags": ["Beneficiaries"],
+        "operationId": "deleteBeneficiary",
+        "summary": "Delete a beneficiary",
+        "description": "Soft-delete a saved beneficiary. It will no longer appear in list results.\n\nOnly the owner can delete their own beneficiaries.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Beneficiary deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data":    { "type": "object", "properties": { "deleted": { "type": "boolean", "example": true } } },
+                    "meta":    { "nullable": true, "example": null },
+                    "error":   { "nullable": true, "example": null }
+                  }
+                },
+                "example": { "success": true, "data": { "deleted": true }, "meta": null, "error": null }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  }
+}
