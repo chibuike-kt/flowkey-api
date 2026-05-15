@@ -155,7 +155,7 @@ model User {
   universal_id_revoked_at DateTime?     @db.Timestamptz
   registration_channel    String?       @db.VarChar(10)  // 'phone' | 'email'
   registration_step       String?       @default("otp_pending") @db.VarChar(30)
-  kyc_tier                Int           @default(0) @db.SmallInt
+  kyc_tier                Int           @default(1) @db.SmallInt
   account_status          AccountStatus @default(pending_verification)
   deleted_at              DateTime?     @db.Timestamptz
   created_at              DateTime      @default(now()) @db.Timestamptz

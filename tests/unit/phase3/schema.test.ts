@@ -90,7 +90,7 @@ describe('Migration file', () => {
   });
 
   it('enforces kyc_tier bounds', () => {
-    expect(allSql).toContain('"kyc_tier" >= 0 AND "kyc_tier" <= 3');
+    expect(allSql).toContain('"kyc_tier" >= 1 AND "kyc_tier" <= 3');
   });
 
   it('includes all required tables', () => {
