@@ -148,7 +148,7 @@ export function createApp(): express.Application {
   app.use(`${apiPrefix}/transfers`, transfersRouter);
   app.use(`${apiPrefix}/qr`, qrRouter);
   app.use(`${apiPrefix}/deposits`, depositsRouter);
-  // ⚠️ REMOVE FOR PRODUCTION — test funding endpoint
+  // REMOVE FOR PRODUCTION — test funding endpoint
   if (process.env['NODE_ENV'] !== 'production') {
     app.use(`${apiPrefix}/test/deposit`, testDepositRouter);
   }

@@ -1,19 +1,7 @@
-/**
- * FlowKey — Notification Service
- *
- * Handles all notification delivery:
- *   - Email via Nodemailer (active)
- *   - SMS via Twilio (stubbed — infrastructure ready, not wired to live provider)
- *   - Push via Firebase Cloud Messaging (infrastructure ready, Phase 14 full wiring)
- *
- * All sends are async — callers never wait on delivery.
- * Phase 14 will wire these through BullMQ workers.
- * For now (Phase 5): email sends directly, SMS logs with TODO marker.
- */
-
 import * as nodemailer from 'nodemailer';
 import { config } from '../../config';
 import { logger } from '../../common/utils/logger';
+import { createBreaker, fire } from '../../common/resilience/circuit-breaker';
 
 // ---------------------------------------------------------------------------
 // Result type — callers use this to apply environment-aware delivery logic.
@@ -32,6 +20,22 @@ export type NotificationResult = {
 // ---------------------------------------------------------------------------
 
 let _transporter: nodemailer.Transporter | null = null;
+
+// Circuit breaker for SMTP delivery — opens after repeated failures
+// so a dead mail server doesn't hang every OTP request
+const _smtpBreaker = createBreaker(
+  async (mailOptions: nodemailer.SendMailOptions) => {
+    const transporter = getTransporter();
+    return transporter.sendMail(mailOptions);
+  },
+  {
+    name: 'smtp',
+    timeout: 15_000,
+    errorThresholdPercentage: 60, // slightly more lenient — SMTP is flaky by nature
+    resetTimeout: 30_000,
+    volumeThreshold: 3, // trip faster — fewer calls to confirm SMTP is dead
+  },
+);
 
 function getTransporter(): nodemailer.Transporter {
   if (_transporter) return _transporter;
@@ -114,45 +118,20 @@ export async function sendOtpEmail(
   purpose: string,
 ): Promise<NotificationResult> {
   const cfg = config();
-  const maxAttempts = 3;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      // Reset transporter on retry — connection may be stale
-      if (attempt > 1) {
-        if (_transporter) {
-          _transporter.close();
-          _transporter = null;
-        }
-        // Brief backoff before retry
-        await new Promise((r) => setTimeout(r, attempt * 1000));
-      }
-
-      const transporter = getTransporter();
-      await transporter.sendMail({
-        from: cfg.smtpFrom,
-        to,
-        subject: `${otp} — Your FlowKey verification code`,
-        html: otpEmailHtml(otp, purpose),
-      });
-      logger.info('OTP email sent', { to, purpose, attempt });
-      return { success: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (attempt < maxAttempts) {
-        logger.warn(`OTP email failed (attempt ${attempt}/${maxAttempts}) — retrying`, {
-          to,
-          purpose,
-          error: message,
-        });
-      } else {
-        logger.error('OTP email failed', { to, purpose, error: message });
-        return { success: false, error: message };
-      }
-    }
+  try {
+    await fire(_smtpBreaker, {
+      from: cfg.smtpFrom,
+      to,
+      subject: `${otp} — Your FlowKey verification code`,
+      html: otpEmailHtml(otp, purpose),
+    });
+    logger.info('OTP email sent', { to, purpose });
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('OTP email failed', { to, purpose, error: message });
+    return { success: false, error: message };
   }
-
-  return { success: false, error: 'Max attempts exceeded' };
 }
 
 export async function sendWelcomeEmail(to: string, displayName: string): Promise<void> {
