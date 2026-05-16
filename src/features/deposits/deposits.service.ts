@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
+import { walletCreditsTotal } from '../../common/metrics/index';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from '../auth/lockout.service';
 import {
   provisionVirtualAccount,
@@ -506,6 +507,7 @@ export async function creditWallet(params: {
     { isolationLevel: 'Serializable' },
   );
 
+  walletCreditsTotal.inc({ channel: params.channel });
   logger.info('Wallet credited', {
     wallet_id: params.walletId,
     amount_kobo: params.amountKobo.toString(),

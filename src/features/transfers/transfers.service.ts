@@ -3,6 +3,7 @@ import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
 import { TIER_LIMITS, type KycTier } from '../kyc/kyc.types';
+import { transfersTotal } from '../../common/metrics/index';
 import { isValidUniversalId, normaliseUniversalId } from '../universal-id/universal-id.service';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from '../auth/lockout.service';
 import { checkInternalTransferFraud, checkBankTransferFraud } from './fraud.service';
@@ -462,6 +463,7 @@ export async function executeInternalTransfer(
     { isolationLevel: 'Serializable' },
   );
 
+  transfersTotal.inc({ type: 'internal', status: 'completed' });
   logger.info('Internal transfer completed', {
     transaction_id: txn.id,
     reference,
@@ -658,6 +660,7 @@ export async function initiateBankTransfer(
     },
   );
 
+  transfersTotal.inc({ type: 'bank', status: 'pending' });
   logger.info('Bank transfer initiated', {
     transaction_id: txn.id,
     reference,

@@ -2,6 +2,7 @@ import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
+import { kycAttemptsTotal } from '../../common/metrics/index';
 import { verifyBvn, verifyNin, verifyAddress } from './prembly.provider';
 import { queueKycResultEmail } from '../../queues/email.queue';
 import {
@@ -213,6 +214,8 @@ export async function upgradeKyc(
       logger.error('Failed to queue KYC result email', { error: (err as Error).message }),
     );
   }
+
+  kycAttemptsTotal.inc({ tier_target: String(targetTier), status: finalStatus });
 
   return {
     attempt_id: attemptId,

@@ -18,6 +18,7 @@ import {
   canRevokeUniversalId,
   nextRevocationAllowedAt,
 } from '../universal-id/universal-id.service';
+import { authEventsTotal } from '../../common/metrics/index';
 import { sendWelcomeEmail } from '../notifications/notification.service';
 import { queueOtpEmail } from '../../queues/email.queue';
 import { queueOtpSms } from '../../queues/sms.queue';
@@ -342,6 +343,7 @@ export async function completeRegistration(payload: {
 
   // Send welcome email if registered via email
   if (typedUser.email) {
+    authEventsTotal.inc({ event: 'registration_completed' });
     void sendWelcomeEmail(typedUser.email, typedActivated.username);
   }
 
