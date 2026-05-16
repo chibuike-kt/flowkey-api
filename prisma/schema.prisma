@@ -26,7 +26,14 @@ generator client {
 
 datasource db {
   provider          = "postgresql"
+  // DATABASE_URL    — Supabase pooled URL (port 6543, PgBouncer)
+  //                   Used by the running application.
+  //                   Format: postgresql://user:pass@host:6543/db?pgbouncer=true
   url               = env("DATABASE_URL")
+  // DIRECT_URL      — Supabase direct URL (port 5432, no pooler)
+  //                   Used ONLY by prisma migrate and prisma studio.
+  //                   Never used by the running application.
+  directUrl         = env("DIRECT_URL")
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
