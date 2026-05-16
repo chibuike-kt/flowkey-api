@@ -1,7 +1,7 @@
 {
   "name": "flowkey-api",
   "version": "0.1.0",
-  "description": "FlowKey â€” wallet-based fintech orchestration platform. Production-grade backend.",
+  "description": "FlowKey \u00e2\u20ac\u201d wallet-based fintech orchestration platform. Production-grade backend.",
   "main": "dist/server.js",
   "engines": {
     "node": ">=24.0.0"
@@ -30,7 +30,12 @@
     "db:seed": "tsx prisma/seed.ts",
     "prepare": "husky",
     "worker:dev": "tsx watch src/workers/index.ts",
-    "worker:start": "node dist/workers/index.js"
+    "worker:start": "node dist/workers/index.js",
+    "load:smoke": "k6 run tests/load/smoke.js",
+    "load:auth": "k6 run tests/load/auth.js",
+    "load:wallet": "k6 run tests/load/wallet.js",
+    "load:stress": "k6 run tests/load/stress.js",
+    "load:spike": "k6 run tests/load/spike.js"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1037.0",
