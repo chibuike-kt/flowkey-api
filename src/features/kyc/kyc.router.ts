@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../../common/middleware/requireAuth';
+import { requireFlag } from '../../common/middleware/featureFlag';
 import { idempotencyCheck } from '../../common/middleware/idempotency';
 import { handleGetKycStatus, handleUpgradeKyc, handleListKycAttempts } from './kyc.controller';
 
@@ -15,6 +16,6 @@ router.get('/status', handleGetKycStatus);
 router.get('/attempts', handleListKycAttempts);
 
 // POST /kyc/upgrade
-router.post('/upgrade', idempotencyCheck, handleUpgradeKyc);
+router.post('/upgrade', requireFlag('kyc.tier2'), idempotencyCheck, handleUpgradeKyc);
 
 export { router as kycRouter };

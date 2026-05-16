@@ -1,0 +1,1366 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey API",
+    "version": "1.0.0",
+    "description": "FlowKey — NGN digital wallet platform.\n\n## Base URL\n`https://flowkey-api.onrender.com/api/v1`\n\n## Authentication\nAll protected endpoints require `Authorization: Bearer <access_token>`.\n\nAccess tokens expire after 15 minutes. Use `POST /auth/refresh` to get a new one before expiry. Every token response includes `access_token_expires_at` (ISO timestamp) — use this to schedule proactive refresh at ~2 minutes before expiry so users are never interrupted.\n\n## Idempotency\nAll mutating endpoints (POST/DELETE that create or modify data) require an `Idempotency-Key: <uuid-v4>` header. Duplicate requests with the same key return the original response without re-executing.\n\n## Monetary values\nAll amounts in **kobo** (integer). `amount / 100 = naira`. Always returned as strings to avoid float precision issues.\n\n## Error format\nAll errors follow:\n```json\n{\n  \"success\": false,\n  \"data\": null,\n  \"meta\": null,\n  \"error\": { \"code\": \"ERROR_CODE\", \"message\": \"Human readable message\" }\n}\n```\n\n## Common error codes\n| Code | HTTP | Meaning |\n|---|---|---|\n| `UNAUTHORIZED` | 401 | Missing or invalid Bearer token |\n| `TOKEN_EXPIRED` | 401 | Access token expired — call /auth/refresh |\n| `FORBIDDEN` | 403 | Authenticated but not allowed |\n| `NOT_FOUND` | 404 | Resource not found |\n| `CONFLICT` | 409 | Duplicate or state conflict |\n| `VALIDATION_ERROR` | 422 | Request body failed validation |\n| `RATE_LIMITED` | 429 | Too many requests |\n| `EXTERNAL_SERVICE_ERROR` | 503 | Payment processor temporarily unavailable |"
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://flowkey-api.onrender.com/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Auth — Registration", "description": "4-step registration flow" },
+    { "name": "Auth — Session", "description": "Login, refresh, unlock, logout" },
+    { "name": "Settings — Passcode", "description": "Change and reset login passcode" },
+    { "name": "Settings — Transaction PIN", "description": "Set and reset 4-digit transaction PIN" },
+    { "name": "Settings — UPP", "description": "Universal Payment PIN — 6-digit high-value auth" },
+    { "name": "Settings — Sessions", "description": "View and revoke active sessions" },
+    { "name": "Settings — Universal ID", "description": "Revoke Universal Payment ID" },
+    { "name": "KYC", "description": "Identity verification — tier 1 (default), 2 (BVN+NIN), 3 (address)" },
+    { "name": "Wallet", "description": "Balance and transaction history" },
+    { "name": "Transfers", "description": "Internal (FlowKey-to-FlowKey) and bank transfers" },
+    { "name": "QR Codes", "description": "Generate, decode, list and deactivate QR codes" },
+    { "name": "Deposits", "description": "Fund wallet via virtual account or card" },
+    { "name": "Cards", "description": "Save and manage Paystack-tokenized cards" },
+    { "name": "Beneficiaries", "description": "Saved payment targets" },
+    { "name": "Webhooks", "description": "Inbound payment processor notifications" },
+    { "name": "System", "description": "Health, metrics, test utilities" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key", "in": "header", "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Duplicate requests with the same key return the original response."
+      }
+    },
+    "schemas": {
+      "KoboAmount": { "type": "string", "description": "Amount in kobo as a string. Divide by 100 for naira.", "example": "500000" },
+      "AuthTokens": {
+        "type": "object",
+        "properties": {
+          "access_token":             { "type": "string" },
+          "refresh_token":            { "type": "string" },
+          "expires_in":               { "type": "integer", "example": 900, "description": "Seconds until access token expires" },
+          "access_token_expires_at":  { "type": "string", "format": "date-time", "description": "Use this to schedule proactive refresh" },
+          "refresh_token_expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error":   { "type": "object", "properties": { "code": { "type": "string" }, "message": { "type": "string" } } }
+        }
+      },
+      "WalletBalance": {
+        "type": "object",
+        "properties": {
+          "wallet_id":       { "type": "string", "format": "uuid" },
+          "balance_kobo":    { "$ref": "#/components/schemas/KoboAmount" },
+          "ledger_balance_kobo": { "$ref": "#/components/schemas/KoboAmount" },
+          "currency":        { "type": "string", "example": "NGN" },
+          "kyc_tier":        { "type": "integer", "enum": [1, 2, 3] },
+          "universal_id":    { "type": "string", "example": "RIVER-CLOUD-SEVEN" }
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "string", "format": "uuid" },
+          "type":         { "type": "string", "enum": ["funding", "transfer", "reversal"] },
+          "status":       { "type": "string", "enum": ["pending", "completed", "failed", "reversed"] },
+          "amount_kobo":  { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":     { "$ref": "#/components/schemas/KoboAmount" },
+          "narration":    { "type": "string", "nullable": true },
+          "reference":    { "type": "string" },
+          "direction":    { "type": "string", "enum": ["credit", "debit"] },
+          "created_at":   { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "KycStatus": {
+        "type": "object",
+        "properties": {
+          "current_tier": { "type": "integer", "enum": [1, 2, 3] },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "flowkey_to_flowkey_kobo": { "$ref": "#/components/schemas/KoboAmount" },
+              "flowkey_to_bank_kobo":    { "$ref": "#/components/schemas/KoboAmount" }
+            }
+          },
+          "last_attempt":              { "nullable": true },
+          "next_attempt_allowed_at":   { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "QrCode": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "string", "format": "uuid" },
+          "type":         { "type": "string", "enum": ["static", "dynamic"] },
+          "payload":      { "type": "string", "description": "Base64url encoded HMAC-signed payload" },
+          "amount_kobo":  { "$ref": "#/components/schemas/KoboAmount", "nullable": true, "description": "Only set for dynamic QR codes" },
+          "narration":    { "type": "string", "nullable": true },
+          "is_active":    { "type": "boolean" },
+          "scan_count":   { "type": "integer" },
+          "created_at":   { "type": "string", "format": "date-time" },
+          "expires_at":   { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "VirtualAccount": {
+        "type": "object",
+        "properties": {
+          "id":             { "type": "string", "format": "uuid" },
+          "account_number": { "type": "string", "example": "9056347821", "description": "10-digit Providus NUBAN" },
+          "account_name":   { "type": "string" },
+          "bank_name":      { "type": "string", "example": "Providus Bank" },
+          "bank_code":      { "type": "string", "example": "101" },
+          "provider":       { "type": "string", "enum": ["providus"] },
+          "is_active":      { "type": "boolean" },
+          "created_at":     { "type": "string", "format": "date-time" }
+        }
+      },
+      "SavedCard": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "string", "format": "uuid" },
+          "last4":        { "type": "string", "example": "4321" },
+          "card_type":    { "type": "string", "example": "visa" },
+          "bank":         { "type": "string", "example": "Access Bank" },
+          "expiry_month": { "type": "string", "example": "08" },
+          "expiry_year":  { "type": "string", "example": "2028" },
+          "is_default":   { "type": "boolean" },
+          "created_at":   { "type": "string", "format": "date-time" }
+        }
+      },
+      "Deposit": {
+        "type": "object",
+        "properties": {
+          "id":              { "type": "string", "format": "uuid" },
+          "channel":         { "type": "string", "enum": ["virtual_account", "card"] },
+          "status":          { "type": "string", "enum": ["pending", "completed", "failed"] },
+          "amount_kobo":     { "$ref": "#/components/schemas/KoboAmount" },
+          "fee_kobo":        { "$ref": "#/components/schemas/KoboAmount" },
+          "net_amount_kobo": { "$ref": "#/components/schemas/KoboAmount" },
+          "reference":       { "type": "string" },
+          "provider_ref":    { "type": "string", "nullable": true },
+          "narration":       { "type": "string", "nullable": true },
+          "card_id":         { "type": "string", "format": "uuid", "nullable": true },
+          "created_at":      { "type": "string", "format": "date-time" },
+          "completed_at":    { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "Beneficiary": {
+        "type": "object",
+        "properties": {
+          "id":               { "type": "string", "format": "uuid" },
+          "type":             { "type": "string", "enum": ["internal", "bank"] },
+          "nickname":         { "type": "string", "nullable": true },
+          "display_name":     { "type": "string" },
+          "display_sub":      { "type": "string" },
+          "recipient_user_id":{ "type": "string", "format": "uuid", "nullable": true },
+          "bank_code":        { "type": "string", "nullable": true },
+          "bank_name":        { "type": "string", "nullable": true },
+          "account_number":   { "type": "string", "nullable": true },
+          "account_name":     { "type": "string", "nullable": true },
+          "account_verified": { "type": "boolean" },
+          "created_at":       { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": { "type": "string", "format": "uuid", "nullable": true },
+          "limit":       { "type": "integer" }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid token.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Forbidden": {
+        "description": "Authenticated but not permitted.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Conflict": {
+        "description": "Duplicate or invalid state.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "ValidationError": {
+        "description": "Request validation failed.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      }
+    }
+  },
+  "paths": {
+    "/auth/initiate": {
+      "post": {
+        "tags": ["Auth — Registration"],
+        "operationId": "initiateRegistration",
+        "summary": "Step 1 — Send OTP",
+        "description": "Start registration. Sends a 6-digit OTP to the provided phone or email. Returns a `registration_id` used in all subsequent steps.\n\nIf a pending registration already exists for the contact, it is reused and a fresh OTP is sent.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["contact", "contact_type"],
+            "properties": {
+              "contact":      { "type": "string", "description": "Phone number (E.164) or email address" },
+              "contact_type": { "type": "string", "enum": ["phone", "email"] }
+            }
+          }, "example": { "contact": "+2348012345678", "contact_type": "phone" } } }
+        },
+        "responses": {
+          "201": { "description": "OTP sent.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+            "success": { "type": "boolean" },
+            "data": { "type": "object", "properties": {
+              "registration_id": { "type": "string", "format": "uuid" },
+              "contact_type":    { "type": "string" },
+              "otp_expires_at":  { "type": "string", "format": "date-time" }
+            }}
+          }}, "example": { "success": true, "data": { "registration_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "contact_type": "phone", "otp_expires_at": "2026-05-16T17:10:00.000Z" }, "meta": null, "error": null } } } },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/verify-otp": {
+      "post": {
+        "tags": ["Auth — Registration"],
+        "operationId": "verifyRegistrationOtp",
+        "summary": "Step 2 — Verify OTP",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["registration_id", "otp"],
+            "properties": {
+              "registration_id": { "type": "string", "format": "uuid" },
+              "otp": { "type": "string", "pattern": "^\\d{6}$" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "OTP verified. Proceed to check-username." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/resend-otp": {
+      "post": {
+        "tags": ["Auth — Registration"],
+        "operationId": "resendRegistrationOtp",
+        "summary": "Resend OTP",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["registration_id"],
+            "properties": { "registration_id": { "type": "string", "format": "uuid" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "OTP resent." },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "429": { "description": "Too many resend attempts." }
+        }
+      }
+    },
+    "/auth/check-username": {
+      "get": {
+        "tags": ["Auth — Registration"],
+        "operationId": "checkUsername",
+        "summary": "Step 3 — Check username availability",
+        "parameters": [{ "name": "username", "in": "query", "required": true, "schema": { "type": "string" }, "description": "5–30 chars, letters/numbers/underscores only" }],
+        "responses": {
+          "200": { "description": "Availability result.", "content": { "application/json": { "example": { "success": true, "data": { "username": "kingsley_kt", "available": true }, "meta": null, "error": null } } } },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/complete": {
+      "post": {
+        "tags": ["Auth — Registration"],
+        "operationId": "completeRegistration",
+        "summary": "Step 4 — Complete registration",
+        "description": "Set username and passcode to activate the account. Returns auth tokens.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["registration_id", "username", "login_passcode", "device_id", "fcm_token"],
+            "properties": {
+              "registration_id": { "type": "string", "format": "uuid" },
+              "username":        { "type": "string", "minLength": 5, "maxLength": 30 },
+              "login_passcode":  { "type": "string", "pattern": "^\\d{6}$", "description": "6-digit numeric passcode" },
+              "device_id":       { "type": "string", "description": "Unique device identifier" },
+              "fcm_token":       { "type": "string", "description": "Firebase push notification token" }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Account created. Returns auth tokens.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/AuthTokens" } } } } } },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth — Session"],
+        "operationId": "login",
+        "summary": "Login",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["contact", "contact_type", "login_passcode", "device_id", "fcm_token"],
+            "properties": {
+              "contact":        { "type": "string" },
+              "contact_type":   { "type": "string", "enum": ["phone", "email"] },
+              "login_passcode": { "type": "string", "pattern": "^\\d{6}$" },
+              "device_id":      { "type": "string" },
+              "fcm_token":      { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Login successful. Returns auth tokens.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/AuthTokens" } } } } } },
+          "401": { "description": "Wrong passcode.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "INVALID_CREDENTIALS", "message": "Incorrect passcode." } } } } },
+          "403": { "description": "Account locked or frozen." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["Auth — Session"],
+        "operationId": "refreshToken",
+        "summary": "Refresh access token",
+        "description": "Exchange a refresh token for a new access token. Call this proactively ~2 minutes before `access_token_expires_at`. Sliding window — each refresh extends the refresh token expiry by another 30 days.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["refresh_token", "device_id"],
+            "properties": {
+              "refresh_token": { "type": "string" },
+              "device_id":     { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "New token pair.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/AuthTokens" } } } } } },
+          "401": { "description": "Refresh token expired or revoked." }
+        }
+      }
+    },
+    "/auth/unlock": {
+      "post": {
+        "tags": ["Auth — Session"],
+        "operationId": "unlockWithPasscode",
+        "summary": "Unlock session with passcode",
+        "description": "Re-authenticate after the app screen-locks. User enters their 6-digit passcode — no OTP, no contact lookup. Returns a new token pair.\n\nUse when the app is reopened after being idle longer than your lock threshold (typically 5 minutes).\n\nFails after too many wrong attempts — the session is revoked and the user must do a full login.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["refresh_token", "login_passcode"],
+            "properties": {
+              "refresh_token":  { "type": "string", "description": "The stored refresh token for this device session" },
+              "login_passcode": { "type": "string", "pattern": "^\\d{6}$" }
+            }
+          }, "example": { "refresh_token": "abc123...", "login_passcode": "123456" } } }
+        },
+        "responses": {
+          "200": { "description": "Unlocked. Returns new token pair.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/AuthTokens" } } } } } },
+          "401": { "description": "Wrong passcode or session not found." },
+          "403": { "description": "Too many wrong attempts — session revoked. User must log in again." }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": ["Auth — Session"],
+        "operationId": "logout",
+        "summary": "Logout current device",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["refresh_token"],
+            "properties": { "refresh_token": { "type": "string" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Session revoked." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/auth/logout-all": {
+      "post": {
+        "tags": ["Auth — Session"],
+        "operationId": "logoutAll",
+        "summary": "Logout all devices",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "All sessions revoked.", "content": { "application/json": { "example": { "success": true, "data": { "revoked_count": 3 }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["Auth — Session"],
+        "operationId": "getMe",
+        "summary": "Get current user profile",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "User profile." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/passcode/change": {
+      "post": {
+        "tags": ["Settings — Passcode"],
+        "operationId": "changePasscode",
+        "summary": "Change passcode",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["current_passcode", "new_passcode"],
+            "properties": {
+              "current_passcode": { "type": "string", "pattern": "^\\d{6}$" },
+              "new_passcode":     { "type": "string", "pattern": "^\\d{6}$" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Passcode changed." },
+          "401": { "description": "Wrong current passcode." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/settings/passcode/forgot": {
+      "post": {
+        "tags": ["Settings — Passcode"],
+        "operationId": "forgotPasscode",
+        "summary": "Request passcode reset OTP",
+        "description": "Sends an OTP to the registered contact. No auth required — user is locked out.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["contact", "contact_type"],
+            "properties": {
+              "contact":      { "type": "string" },
+              "contact_type": { "type": "string", "enum": ["phone", "email"] }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "OTP sent.", "content": { "application/json": { "example": { "success": true, "data": { "reset_token": "abc123...", "expires_at": "2026-05-16T17:15:00.000Z" }, "meta": null, "error": null } } } },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/settings/passcode/reset": {
+      "post": {
+        "tags": ["Settings — Passcode"],
+        "operationId": "resetPasscode",
+        "summary": "Reset passcode with OTP",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["reset_token", "otp", "new_passcode"],
+            "properties": {
+              "reset_token":  { "type": "string" },
+              "otp":          { "type": "string", "pattern": "^\\d{6}$" },
+              "new_passcode": { "type": "string", "pattern": "^\\d{6}$" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Passcode reset." },
+          "401": { "description": "Invalid or expired reset token / wrong OTP." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/settings/pin/status": {
+      "get": {
+        "tags": ["Settings — Transaction PIN"],
+        "operationId": "getTransactionPinStatus",
+        "summary": "Check if transaction PIN is set",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "PIN status.", "content": { "application/json": { "example": { "success": true, "data": { "pin_set": true }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/pin/set": {
+      "post": {
+        "tags": ["Settings — Transaction PIN"],
+        "operationId": "setTransactionPin",
+        "summary": "Set transaction PIN (first time only)",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["transaction_pin"],
+            "properties": { "transaction_pin": { "type": "string", "pattern": "^\\d{4}$", "description": "4-digit numeric PIN" } }
+          }, "example": { "transaction_pin": "1234" } } }
+        },
+        "responses": {
+          "200": { "description": "PIN set.", "content": { "application/json": { "example": { "success": true, "data": { "pin_set": true }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "PIN already set — use reset flow." }
+        }
+      }
+    },
+    "/settings/pin/reset/initiate": {
+      "post": {
+        "tags": ["Settings — Transaction PIN"],
+        "operationId": "initiatePinReset",
+        "summary": "Reset PIN — Step 1: Request OTP",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "OTP sent to registered contact.", "content": { "application/json": { "example": { "success": true, "data": { "reset_token": "a3f8c2...", "expires_at": "2026-05-16T17:15:00.000Z" }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/pin/reset/confirm": {
+      "post": {
+        "tags": ["Settings — Transaction PIN"],
+        "operationId": "confirmPinReset",
+        "summary": "Reset PIN — Step 2: Verify OTP",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["otp", "reset_token"],
+            "properties": {
+              "otp":         { "type": "string", "pattern": "^\\d{6}$" },
+              "reset_token": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "OTP verified. Returns confirm_token.", "content": { "application/json": { "example": { "success": true, "data": { "confirm_token": "x9k2m7...", "expires_at": "2026-05-16T17:25:00.000Z" }, "meta": null, "error": null } } } },
+          "401": { "description": "Invalid/expired reset_token or wrong OTP." }
+        }
+      }
+    },
+    "/settings/pin/reset/complete": {
+      "post": {
+        "tags": ["Settings — Transaction PIN"],
+        "operationId": "completePinReset",
+        "summary": "Reset PIN — Step 3: Set new PIN",
+        "description": "No Bearer token required — confirm_token is the proof of identity.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["reset_token", "new_pin", "confirm_pin"],
+            "properties": {
+              "reset_token": { "type": "string", "description": "confirm_token from step 2" },
+              "new_pin":     { "type": "string", "pattern": "^\\d{4}$" },
+              "confirm_pin": { "type": "string", "pattern": "^\\d{4}$" }
+            }
+          }, "example": { "reset_token": "x9k2m7...", "new_pin": "5678", "confirm_pin": "5678" } } }
+        },
+        "responses": {
+          "200": { "description": "PIN reset.", "content": { "application/json": { "example": { "success": true, "data": { "reset": true }, "meta": null, "error": null } } } },
+          "401": { "description": "Invalid/expired confirm_token." },
+          "422": { "description": "PINs don't match." }
+        }
+      }
+    },
+    "/settings/upp/status": {
+      "get": {
+        "tags": ["Settings — UPP"],
+        "operationId": "getUppStatus",
+        "summary": "Check if UPP is set",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "UPP status.", "content": { "application/json": { "example": { "success": true, "data": { "upp_set": false }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/upp/set": {
+      "post": {
+        "tags": ["Settings — UPP"],
+        "operationId": "setUpp",
+        "summary": "Set UPP (first time only)",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["upp"],
+            "properties": { "upp": { "type": "string", "pattern": "^\\d{6}$", "description": "6-digit Universal Payment PIN" } }
+          }, "example": { "upp": "123456" } } }
+        },
+        "responses": {
+          "200": { "description": "UPP set." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "UPP already set — use reset flow." }
+        }
+      }
+    },
+    "/settings/upp/reset/initiate": {
+      "post": {
+        "tags": ["Settings — UPP"],
+        "operationId": "initiateUppReset",
+        "summary": "Reset UPP — Step 1: Request OTP",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "OTP sent.", "content": { "application/json": { "example": { "success": true, "data": { "reset_token": "a3f8c2...", "expires_at": "2026-05-16T17:15:00.000Z" }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/upp/reset/confirm": {
+      "post": {
+        "tags": ["Settings — UPP"],
+        "operationId": "confirmUppReset",
+        "summary": "Reset UPP — Step 2: Verify OTP",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["otp", "reset_token"],
+            "properties": {
+              "otp":         { "type": "string", "pattern": "^\\d{6}$" },
+              "reset_token": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "OTP verified. Returns confirm_token." },
+          "401": { "description": "Invalid/expired reset_token or wrong OTP." }
+        }
+      }
+    },
+    "/settings/upp/reset/complete": {
+      "post": {
+        "tags": ["Settings — UPP"],
+        "operationId": "completeUppReset",
+        "summary": "Reset UPP — Step 3: Set new UPP",
+        "description": "No Bearer token required — confirm_token is the proof of identity.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["reset_token", "new_upp", "confirm_upp"],
+            "properties": {
+              "reset_token": { "type": "string" },
+              "new_upp":     { "type": "string", "pattern": "^\\d{6}$" },
+              "confirm_upp": { "type": "string", "pattern": "^\\d{6}$" }
+            }
+          }, "example": { "reset_token": "x9k2m7...", "new_upp": "654321", "confirm_upp": "654321" } } }
+        },
+        "responses": {
+          "200": { "description": "UPP reset.", "content": { "application/json": { "example": { "success": true, "data": { "reset": true }, "meta": null, "error": null } } } },
+          "401": { "description": "Invalid/expired confirm_token." }
+        }
+      }
+    },
+    "/settings/sessions": {
+      "get": {
+        "tags": ["Settings — Sessions"],
+        "operationId": "listSessions",
+        "summary": "List active sessions",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Active sessions list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/settings/sessions/{id}": {
+      "delete": {
+        "tags": ["Settings — Sessions"],
+        "operationId": "revokeSession",
+        "summary": "Revoke a specific session",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Session revoked." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/settings/universal-id/revoke": {
+      "post": {
+        "tags": ["Settings — Universal ID"],
+        "operationId": "revokeUniversalId",
+        "summary": "Revoke and regenerate Universal ID",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["login_passcode"],
+            "properties": { "login_passcode": { "type": "string", "pattern": "^\\d{6}$" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Universal ID revoked and new one issued." },
+          "401": { "description": "Wrong passcode." }
+        }
+      }
+    },
+    "/kyc/status": {
+      "get": {
+        "tags": ["KYC"],
+        "operationId": "getKycStatus",
+        "summary": "Get KYC tier and limits",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "KYC status.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/KycStatus" } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/kyc/attempts": {
+      "get": {
+        "tags": ["KYC"],
+        "operationId": "listKycAttempts",
+        "summary": "List KYC upgrade attempts",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "KYC attempts list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/kyc/upgrade": {
+      "post": {
+        "tags": ["KYC"],
+        "operationId": "upgradeKyc",
+        "summary": "Submit KYC upgrade",
+        "description": "Submit documents for the next KYC tier. Must upgrade sequentially (1→2→3).\n\n**Tier 2:** BVN + NIN (both required, verified jointly via Prembly)\n\n**Tier 3:** Address line + utility bill reference (uploaded via Prembly SDK first)",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "title": "Tier 2 — BVN + NIN",
+                  "type": "object", "required": ["target_tier", "bvn", "nin"],
+                  "properties": {
+                    "target_tier": { "type": "integer", "enum": [2] },
+                    "bvn":         { "type": "string", "pattern": "^\\d{11}$" },
+                    "nin":         { "type": "string", "pattern": "^\\d{11}$" }
+                  }
+                },
+                {
+                  "title": "Tier 3 — Address",
+                  "type": "object", "required": ["target_tier", "address_line", "utility_bill_reference"],
+                  "properties": {
+                    "target_tier":            { "type": "integer", "enum": [3] },
+                    "address_line":           { "type": "string", "minLength": 5 },
+                    "utility_bill_reference": { "type": "string" }
+                  }
+                }
+              ],
+              "discriminator": { "propertyName": "target_tier" }
+            },
+            "examples": {
+              "tier2": { "summary": "Upgrade to Tier 2", "value": { "target_tier": 2, "bvn": "12345678901", "nin": "98765432101" } },
+              "tier3": { "summary": "Upgrade to Tier 3", "value": { "target_tier": 3, "address_line": "14 Admiralty Way, Lekki Phase 1", "utility_bill_reference": "prembly-ref-abc123" } }
+            }
+          } }
+        },
+        "responses": {
+          "200": { "description": "KYC submitted.", "content": { "application/json": { "example": { "success": true, "data": { "attempt_id": "uuid", "status": "passed", "new_tier": 2 }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "Already at target tier or not eligible to upgrade yet." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/wallet/balance": {
+      "get": {
+        "tags": ["Wallet"],
+        "operationId": "getBalance",
+        "summary": "Get wallet balance",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Wallet balance.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/WalletBalance" } } }, "example": { "success": true, "data": { "wallet_id": "uuid", "balance_kobo": "5000000", "currency": "NGN", "kyc_tier": 1, "universal_id": "RIVER-CLOUD-SEVEN" }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/wallet/transactions": {
+      "get": {
+        "tags": ["Wallet"],
+        "operationId": "listTransactions",
+        "summary": "Transaction history",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20, "maximum": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "Transaction list.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/Transaction" } }, "meta": { "$ref": "#/components/schemas/PaginationMeta" } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/transfers/resolve-recipient": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "resolveRecipient",
+        "summary": "Look up a transfer recipient",
+        "description": "Resolve a recipient by username, Universal ID (word phrase), or wallet ID. Returns display name and wallet ID for the transfer form.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["identifier"],
+            "properties": {
+              "identifier": { "type": "string", "description": "Username, Universal ID (e.g. RIVER-CLOUD-SEVEN), or wallet UUID" }
+            }
+          }, "example": { "identifier": "kingsley_kt" } } }
+        },
+        "responses": {
+          "200": { "description": "Recipient found.", "content": { "application/json": { "example": { "success": true, "data": { "wallet_id": "uuid", "display_name": "Kingsley Chibuike", "username": "kingsley_kt", "universal_id": "RIVER-CLOUD-SEVEN", "kyc_tier": 2 }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Recipient not found." }
+        }
+      }
+    },
+    "/transfers/internal": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "internalTransfer",
+        "summary": "Transfer to FlowKey user",
+        "description": "Send money to another FlowKey wallet. Requires transaction PIN. Synchronous — wallet is debited immediately.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["recipient_wallet_id", "amount_kobo", "pin"],
+            "properties": {
+              "recipient_wallet_id": { "type": "string", "format": "uuid" },
+              "amount_kobo":         { "type": "integer", "minimum": 1 },
+              "narration":           { "type": "string", "maxLength": 255 },
+              "pin":                 { "type": "string", "pattern": "^\\d{4}$" },
+              "source":              { "type": "string", "enum": ["username", "qr_code", "universal_id", "api"], "default": "username" }
+            }
+          }, "example": { "recipient_wallet_id": "uuid", "amount_kobo": 500000, "narration": "Rent", "pin": "1234" } } }
+        },
+        "responses": {
+          "201": { "description": "Transfer completed." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN, insufficient balance, or daily limit exceeded." },
+          "404": { "description": "Recipient not found." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/transfers/bank": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "bankTransfer",
+        "summary": "Transfer to bank account",
+        "description": "Send money to a Nigerian bank account. Async — returns `pending` immediately. Status updates via push notification or poll `GET /transfers/:id`.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["amount_kobo", "pin", "bank_code", "account_number", "account_name", "bank_name"],
+            "properties": {
+              "amount_kobo":    { "type": "integer", "minimum": 1 },
+              "narration":      { "type": "string", "maxLength": 255 },
+              "pin":            { "type": "string", "pattern": "^\\d{4}$" },
+              "bank_code":      { "type": "string", "example": "058" },
+              "account_number": { "type": "string", "pattern": "^\\d{10}$" },
+              "account_name":   { "type": "string" },
+              "bank_name":      { "type": "string" }
+            }
+          }, "example": { "amount_kobo": 1000000, "pin": "1234", "bank_code": "058", "account_number": "0123456789", "account_name": "Kingsley Chibuike", "bank_name": "Guaranty Trust Bank", "narration": "July rent" } } }
+        },
+        "responses": {
+          "201": { "description": "Transfer initiated (pending).", "content": { "application/json": { "example": { "success": true, "data": { "id": "uuid", "status": "pending", "reference": "TRF-20260516-A1B2C3", "amount_kobo": "1000000" }, "meta": null, "error": null } } } },
+          "403": { "description": "Wrong PIN, insufficient balance, or daily limit exceeded." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/transfers": {
+      "get": {
+        "tags": ["Transfers"],
+        "operationId": "listTransfers",
+        "summary": "Transfer history",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer", "default": 20, "maximum": 50 } },
+          { "name": "type",   "in": "query", "schema": { "type": "string", "enum": ["internal", "bank", "all"], "default": "all" } }
+        ],
+        "responses": {
+          "200": { "description": "Transfer list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/transfers/{id}": {
+      "get": {
+        "tags": ["Transfers"],
+        "operationId": "getTransfer",
+        "summary": "Get transfer detail",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Transfer detail." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/transfers/{id}/retry": {
+      "post": {
+        "tags": ["Transfers"],
+        "operationId": "retryTransfer",
+        "summary": "Retry a failed bank transfer",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["pin"],
+            "properties": { "pin": { "type": "string", "pattern": "^\\d{4}$" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Retry queued." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "Transfer is not in a retryable state." }
+        }
+      }
+    },
+    "/qr/generate": {
+      "post": {
+        "tags": ["QR Codes"],
+        "operationId": "generateQr",
+        "summary": "Generate a QR code",
+        "description": "**Static QR:** no amount — payer sets amount. Reusable indefinitely.\n\n**Dynamic QR:** fixed amount pre-set. Single-use or expires.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "schema": {
+              "oneOf": [
+                { "title": "Static", "type": "object", "required": ["type"], "properties": { "type": { "type": "string", "enum": ["static"] }, "narration": { "type": "string", "maxLength": 255 } } },
+                { "title": "Dynamic", "type": "object", "required": ["type", "amount_kobo"], "properties": { "type": { "type": "string", "enum": ["dynamic"] }, "amount_kobo": { "type": "integer", "minimum": 1 }, "narration": { "type": "string", "maxLength": 255 }, "expires_in_minutes": { "type": "integer", "minimum": 1 } } }
+              ]
+            },
+            "examples": {
+              "static":  { "summary": "Static QR", "value": { "type": "static", "narration": "Payment to Kingsley" } },
+              "dynamic": { "summary": "Dynamic QR", "value": { "type": "dynamic", "amount_kobo": 500000, "narration": "Lunch ₦5000", "expires_in_minutes": 30 } }
+            }
+          } }
+        },
+        "responses": {
+          "201": { "description": "QR code generated.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/QrCode" } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/qr/decode": {
+      "post": {
+        "tags": ["QR Codes"],
+        "operationId": "decodeQr",
+        "summary": "Decode a QR payload",
+        "description": "Verify HMAC signature and extract wallet ID and amount from a scanned QR payload.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["payload"],
+            "properties": { "payload": { "type": "string", "description": "Base64url string from QR scan" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Decoded QR data.", "content": { "application/json": { "example": { "success": true, "data": { "wallet_id": "uuid", "amount_kobo": "500000", "narration": "Lunch", "display_name": "Kingsley Chibuike" }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "description": "Invalid or tampered QR payload." }
+        }
+      }
+    },
+    "/qr": {
+      "get": {
+        "tags": ["QR Codes"],
+        "operationId": "listQrCodes",
+        "summary": "List my QR codes",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": {
+          "200": { "description": "QR code list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/qr/{id}": {
+      "get": {
+        "tags": ["QR Codes"],
+        "operationId": "getQrCode",
+        "summary": "Get QR code detail",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "QR code detail." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["QR Codes"],
+        "operationId": "deactivateQrCode",
+        "summary": "Deactivate a QR code",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "QR code deactivated." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/deposits/virtual-account": {
+      "post": {
+        "tags": ["Deposits"],
+        "operationId": "provisionVirtualAccount",
+        "summary": "Provision virtual account",
+        "description": "Assign a dedicated Providus NUBAN. Idempotent — returns existing account if already provisioned.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "201": { "description": "Virtual account provisioned.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/VirtualAccount" } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "description": "Providus temporarily unavailable (circuit breaker open)." }
+        }
+      },
+      "get": {
+        "tags": ["Deposits"],
+        "operationId": "getVirtualAccount",
+        "summary": "Get virtual account",
+        "description": "Returns null if not yet provisioned — show 'Get account number' CTA in that case.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Virtual account or null.", "content": { "application/json": { "examples": {
+            "exists":    { "value": { "success": true, "data": { "account_number": "9056347821", "bank_name": "Providus Bank" }, "meta": null, "error": null } },
+            "not_found": { "value": { "success": true, "data": null, "meta": null, "error": null } }
+          } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/deposits/card": {
+      "post": {
+        "tags": ["Deposits"],
+        "operationId": "cardDeposit",
+        "summary": "Deposit via saved card",
+        "description": "Charge a saved card. Async — returns `pending`. Wallet credited when Paystack confirms via webhook.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["card_id", "amount_kobo", "pin"],
+            "properties": {
+              "card_id":     { "type": "string", "format": "uuid" },
+              "amount_kobo": { "type": "integer", "minimum": 10000, "description": "Minimum ₦100 (10000 kobo)" },
+              "pin":         { "type": "string", "pattern": "^\\d{4}$" }
+            }
+          }, "example": { "card_id": "uuid", "amount_kobo": 500000, "pin": "1234" } } }
+        },
+        "responses": {
+          "201": { "description": "Deposit initiated.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/Deposit" } } } } } },
+          "403": { "description": "Wrong PIN or card not owned by user." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/deposits": {
+      "get": {
+        "tags": ["Deposits"],
+        "operationId": "listDeposits",
+        "summary": "Deposit history",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "cursor",  "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit",   "in": "query", "schema": { "type": "integer", "default": 20, "maximum": 50 } },
+          { "name": "channel", "in": "query", "schema": { "type": "string", "enum": ["virtual_account", "card", "all"], "default": "all" } },
+          { "name": "status",  "in": "query", "schema": { "type": "string", "enum": ["pending", "completed", "failed"] } }
+        ],
+        "responses": {
+          "200": { "description": "Deposit list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/cards": {
+      "post": {
+        "tags": ["Cards"],
+        "operationId": "addCard",
+        "summary": "Save a card",
+        "description": "Save a Paystack-tokenized card after the user completes card entry via the Paystack SDK. FlowKey stores only the authorization code and display metadata — never raw card numbers.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["authorization_code", "last4", "card_type", "bank", "expiry_month", "expiry_year"],
+            "properties": {
+              "authorization_code": { "type": "string", "example": "AUTH_8dfhjsdf72", "description": "From Paystack SDK" },
+              "last4":        { "type": "string", "pattern": "^\\d{4}$" },
+              "card_type":    { "type": "string", "example": "visa" },
+              "bank":         { "type": "string", "example": "Access Bank" },
+              "expiry_month": { "type": "string", "pattern": "^(0[1-9]|1[0-2])$" },
+              "expiry_year":  { "type": "string", "pattern": "^\\d{4}$" },
+              "set_as_default": { "type": "boolean", "default": false }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Card saved.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/SavedCard" } } } } } },
+          "409": { "description": "Card already saved." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "get": {
+        "tags": ["Cards"],
+        "operationId": "listCards",
+        "summary": "List saved cards",
+        "description": "Default card is always first. No authorization codes returned.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Card list.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/SavedCard" } } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/cards/{id}": {
+      "delete": {
+        "tags": ["Cards"],
+        "operationId": "removeCard",
+        "summary": "Remove a saved card",
+        "description": "If removed card was default, oldest remaining card is auto-promoted.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Card removed.", "content": { "application/json": { "example": { "success": true, "data": { "removed": true }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Card does not belong to this user." },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/beneficiaries": {
+      "post": {
+        "tags": ["Beneficiaries"],
+        "operationId": "addBeneficiary",
+        "summary": "Add a beneficiary",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": {
+            "schema": {
+              "oneOf": [
+                { "title": "Internal (FlowKey user)", "type": "object", "required": ["type", "recipient_wallet_id"], "properties": { "type": { "type": "string", "enum": ["internal"] }, "recipient_wallet_id": { "type": "string", "format": "uuid" }, "nickname": { "type": "string", "maxLength": 50 } } },
+                { "title": "Bank account", "type": "object", "required": ["type", "bank_code", "bank_name", "account_number", "account_name"], "properties": { "type": { "type": "string", "enum": ["bank"] }, "bank_code": { "type": "string" }, "bank_name": { "type": "string" }, "account_number": { "type": "string", "pattern": "^\\d{10}$" }, "account_name": { "type": "string" }, "nickname": { "type": "string", "maxLength": 50 } } }
+              ],
+              "discriminator": { "propertyName": "type" }
+            },
+            "examples": {
+              "internal": { "value": { "type": "internal", "recipient_wallet_id": "uuid", "nickname": "Kingsley" } },
+              "bank":     { "value": { "type": "bank", "bank_code": "058", "bank_name": "GTBank", "account_number": "0123456789", "account_name": "Kingsley Chibuike", "nickname": "Kingsley GTB" } }
+            }
+          } }
+        },
+        "responses": {
+          "201": { "description": "Beneficiary saved.", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/Beneficiary" } } } } } },
+          "409": { "description": "Duplicate or self-add." },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "get": {
+        "tags": ["Beneficiaries"],
+        "operationId": "listBeneficiaries",
+        "summary": "List beneficiaries",
+        "description": "Account numbers masked (****6789) in list. Use GET /beneficiaries/:id for full number.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "type",   "in": "query", "schema": { "type": "string", "enum": ["internal", "bank", "all"], "default": "all" } },
+          { "name": "search", "in": "query", "schema": { "type": "string", "maxLength": 100 } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 100 } }
+        ],
+        "responses": {
+          "200": { "description": "Beneficiary list." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/beneficiaries/{id}": {
+      "get": {
+        "tags": ["Beneficiaries"],
+        "operationId": "getBeneficiary",
+        "summary": "Get beneficiary detail",
+        "description": "Account number returned unmasked — use when pre-filling a transfer form.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Beneficiary detail." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Beneficiaries"],
+        "operationId": "updateBeneficiary",
+        "summary": "Update beneficiary nickname",
+        "description": "Only nickname can be changed. Pass null to clear.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["nickname"],
+            "properties": { "nickname": { "type": "string", "nullable": true, "maxLength": 50 } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Updated." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Beneficiaries"],
+        "operationId": "deleteBeneficiary",
+        "summary": "Delete a beneficiary",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Deleted.", "content": { "application/json": { "example": { "success": true, "data": { "deleted": true }, "meta": null, "error": null } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/webhooks/v1/providus": {
+      "post": {
+        "tags": ["Webhooks"],
+        "operationId": "providusWebhook",
+        "summary": "Providus virtual account credit",
+        "description": "Called by Providus when a bank transfer arrives at the user's virtual account. HMAC-SHA512 verified via `x-prv-signature` header. Always returns 200 to prevent retries on processing errors.",
+        "parameters": [{ "name": "x-prv-signature", "in": "header", "required": true, "schema": { "type": "string" }, "description": "HMAC-SHA512 of raw request body using PROVIDUS_WEBHOOK_SECRET" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "example": { "transaction_id": "TXN-001", "account_number": "9056347821", "amount": 5000, "narration": "Transfer from GTBank", "session_id": "PRV-SESSION-001" } } }
+        },
+        "responses": { "200": { "description": "Received.", "content": { "application/json": { "example": { "received": true } } } } }
+      }
+    },
+    "/webhooks/v1/paystack": {
+      "post": {
+        "tags": ["Webhooks"],
+        "operationId": "paystackWebhook",
+        "summary": "Paystack card charge confirmation",
+        "description": "Called by Paystack on `charge.success`. HMAC-SHA512 verified via `x-paystack-signature`. Finds the deposit by reference and credits the wallet.",
+        "parameters": [{ "name": "x-paystack-signature", "in": "header", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "example": { "event": "charge.success", "data": { "id": 12345, "reference": "DEP-20260516-A1B2C3", "amount": 500000 } } } }
+        },
+        "responses": { "200": { "description": "Received.", "content": { "application/json": { "example": { "received": true } } } } }
+      }
+    },
+    "/test/deposit": {
+      "post": {
+        "tags": ["System"],
+        "operationId": "testDeposit",
+        "summary": "Instant test deposit (dev/staging only)",
+        "description": "⚠️ **Not available in production.** Instantly credits the wallet with any amount. No card, no virtual account, no webhook. Use to fund test wallets during development.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["amount_kobo"],
+            "properties": {
+              "amount_kobo": { "type": "integer", "minimum": 100, "example": 5000000 },
+              "narration":   { "type": "string", "maxLength": 255 }
+            }
+          }, "examples": {
+            "standard": { "summary": "₦50,000", "value": { "amount_kobo": 5000000 } },
+            "large":    { "summary": "₦1,000,000", "value": { "amount_kobo": 100000000, "narration": "Large balance test" } }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Wallet funded.", "content": { "application/json": { "example": { "success": true, "data": { "reference": "TEST-1715515200000-AB1C2D", "amount_kobo": "5000000", "status": "completed", "note": "This is a test deposit. Not available in production." }, "meta": null, "error": null } } } },
+          "403": { "description": "Not available in production." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["System"],
+        "operationId": "healthCheck",
+        "summary": "Health check",
+        "description": "Returns database and Redis connectivity status. Used by load balancers. Returns 503 if any dependency is down.",
+        "responses": {
+          "200": { "description": "Healthy.", "content": { "application/json": { "example": { "status": "ok", "service": "flowkey-api", "version": "0.1.0", "timestamp": "2026-05-16T16:52:04.590Z", "latency_ms": 12, "checks": { "database": "ok", "redis": "ok" } } } } },
+          "503": { "description": "Degraded — one or more dependencies down.", "content": { "application/json": { "example": { "status": "degraded", "checks": { "database": "ok", "redis": "error" } } } } }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["System"],
+        "operationId": "prometheusMetrics",
+        "summary": "Prometheus metrics",
+        "description": "Prometheus text format metrics for scraping. Exposes HTTP request rates, latency histograms, BullMQ queue depths, wallet credit counters, transfer counters, auth event counters, and Node.js runtime metrics.\n\nRestrict access to your monitoring network in production.",
+        "responses": {
+          "200": { "description": "Prometheus text format.", "content": { "text/plain": { "example": "# HELP http_requests_total Total number of HTTP requests\n# TYPE http_requests_total counter\nhttp_requests_total{method=\"GET\",route=\"/health\",status_code=\"200\",app=\"flowkey-api\"} 42\n..." } } }
+        }
+      }
+    }
+  },
+  "security": []
+}

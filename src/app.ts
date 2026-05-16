@@ -20,9 +20,10 @@ import { walletRouter } from './features/wallet/wallet.router';
 import { transfersRouter } from './features/transfers/transfers.router';
 import { qrRouter } from './features/qr/qr.router';
 import { depositsRouter } from './features/deposits/deposits.router';
-import { testDepositRouter } from './features/deposits/test-deposit.router'; // ⚠️ REMOVE FOR PRODUCTION
+import { testDepositRouter } from './features/deposits/test-deposit.router'; // REMOVE FOR PRODUCTION
 import { cardsRouter } from './features/cards/cards.router';
 import { beneficiariesRouter } from './features/beneficiaries/beneficiaries.router';
+import { flagsRouter } from './features/admin/flags.router';
 import { webhooksRouter } from './features/webhooks/webhooks.router';
 // import { transferRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
@@ -154,6 +155,9 @@ export function createApp(): express.Application {
   }
   app.use(`${apiPrefix}/cards`, cardsRouter);
   app.use(`${apiPrefix}/beneficiaries`, beneficiariesRouter);
+
+  // Admin — internal only, protected by ADMIN_API_KEY header
+  app.use('/admin/flags', flagsRouter);
 
   // Webhooks — separate prefix, raw body parsing
   app.use('/webhooks/v1', webhooksRouter);
