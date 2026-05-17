@@ -1,5 +1,9 @@
+/**
+ * FlowKey — Wallet Controller
+ */
+
 import type { Request, Response, NextFunction } from 'express';
-import { getWalletBalance, listWalletTransactions } from './wallet.service';
+import { getWalletBalance, listWalletTransactions, getTransactionDetail } from './wallet.service';
 
 export async function handleGetBalance(
   req: Request,
@@ -32,6 +36,21 @@ export async function handleListTransactions(
       meta: { next_cursor: result.next_cursor, limit },
       error: null,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleGetTransactionDetail(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.user!.sub as string;
+    const id = req.params['id'] as string;
+    const result = await getTransactionDetail(id, userId);
+    res.json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
   }
