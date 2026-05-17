@@ -1,4 +1,12 @@
+/**
+ * FlowKey — Transfer Zod Schemas
+ */
+
 import { z } from 'zod';
+
+// ---------------------------------------------------------------------------
+// Resolve recipient
+// ---------------------------------------------------------------------------
 
 export const ResolveRecipientSchema = z.object({
   identifier: z
@@ -8,35 +16,87 @@ export const ResolveRecipientSchema = z.object({
     .describe('Username or Universal ID (e.g. BOLT-KP-4821)'),
 });
 
-export const InternalTransferSchema = z
-  .object({
-    recipient_wallet_id: z.string().uuid('recipient_wallet_id must be a UUID'),
+// ---------------------------------------------------------------------------
+// Internal transfer (FlowKey → FlowKey)
+// ---------------------------------------------------------------------------
 
-    amount_kobo: z
-      .number()
-      .int('Amount must be an integer')
-      .positive('Amount must be positive')
-      .max(500_000_000_00, 'Amount exceeds single-transfer maximum'), // ₦5bn cap
+export const InternalTransferSchema = z.object({
+  // Recipient identified by their wallet_id (from resolve-recipient)
+  recipient_wallet_id: z.string().uuid('recipient_wallet_id must be a UUID'),
 
-    narration: z.string().max(255).optional(),
+  amount_kobo: z
+    .number()
+    .int('Amount must be an integer')
+    .positive('Amount must be positive')
+    .max(500_000_000_00, 'Amount exceeds single-transfer maximum'),
 
-    pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be 4 digits'),
+  narration: z.string().max(255).optional(),
 
-    source: z.enum(['username', 'qr_code', 'universal_id', 'api']).default('username'),
+  // Transaction PIN — 4-digit, set in FlowKey app settings
+  pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be 4 digits'),
 
-    // UID auth fields — only required when source = 'universal_id'
-    uid_identifier: z.string().max(50).optional(),
+  // How the recipient was found — logged for analytics, not a security control
+  source: z.enum(['username', 'qr_code', 'api']).default('username'),
 
-    // For QR — the QR token the client decoded
-    qr_token: z.string().uuid().optional(),
+  // QR token — only present when source = qr_code
+  qr_token: z.string().uuid().optional(),
 
-    // Device fingerprint — logged for chargeback evidence, never blocked on
-    device_id: z.string().max(255).optional(),
-  })
-  .refine((d) => d.source !== 'universal_id' || !!d.uid_identifier, {
-    message: 'uid_identifier is required when source is universal_id',
-    path: ['uid_identifier'],
-  });
+  device_id: z.string().max(255).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// UID transfer — 3rd party app initiated (no FlowKey session required)
+// ---------------------------------------------------------------------------
+
+// User presents their Universal ID + UPP on the 3rd party app.
+// The 3rd party calls these endpoints — no Bearer token needed.
+// UPP (Universal Payment PIN, 6-digit) authenticates instead of session PIN.
+
+export const UidInternalTransferSchema = z.object({
+  // The payer's Universal ID (e.g. RIVER-CLOUD-SEVEN)
+  universal_id: z.string().min(1, 'Universal ID is required'),
+
+  // Universal Payment PIN — 6-digit
+  upp: z.string().regex(/^\d{6}$/, 'UPP must be exactly 6 digits'),
+
+  // Recipient — FlowKey wallet
+  recipient_wallet_id: z.string().uuid('recipient_wallet_id must be a UUID'),
+
+  amount_kobo: z
+    .number()
+    .int('Amount must be an integer')
+    .positive('Amount must be positive')
+    .max(500_000_000_00, 'Amount exceeds single-transfer maximum'),
+
+  narration: z.string().max(255).optional(),
+});
+
+export const UidBankTransferSchema = z.object({
+  // The payer's Universal ID
+  universal_id: z.string().min(1, 'Universal ID is required'),
+
+  // Universal Payment PIN — 6-digit
+  upp: z.string().regex(/^\d{6}$/, 'UPP must be exactly 6 digits'),
+
+  // Recipient bank account
+  bank_code: z.string().min(3).max(10),
+  account_number: z.string().regex(/^\d{10}$/, 'Account number must be 10 digits'),
+  account_name: z.string().min(2).max(100),
+  bank_name: z.string().min(2).max(100),
+  verified_account_name: z.string().min(2).max(100),
+
+  amount_kobo: z
+    .number()
+    .int('Amount must be an integer')
+    .positive('Amount must be positive')
+    .max(500_000_000_00, 'Amount exceeds single-transfer maximum'),
+
+  narration: z.string().max(255).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Bank transfer (FlowKey → Bank)
+// ---------------------------------------------------------------------------
 
 export const BankTransferSchema = z.object({
   amount_kobo: z
@@ -61,6 +121,9 @@ export const BankTransferSchema = z.object({
   device_id: z.string().max(255).optional(),
 });
 
+// ---------------------------------------------------------------------------
+// List transfers (GET /transfers)
+// ---------------------------------------------------------------------------
 
 export const ListTransfersSchema = z.object({
   cursor: z.string().uuid().optional(),
@@ -69,6 +132,10 @@ export const ListTransfersSchema = z.object({
   status: z.enum(['pending', 'processing', 'completed', 'failed', 'reversed']).optional(),
   direction: z.enum(['sent', 'received', 'all']).default('all'),
 });
+
+// ---------------------------------------------------------------------------
+// Retry failed bank transfer
+// ---------------------------------------------------------------------------
 
 export const RetryTransferSchema = z.object({
   pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be 4 digits'),
@@ -79,3 +146,5 @@ export type InternalTransferInput = z.infer<typeof InternalTransferSchema>;
 export type BankTransferInput = z.infer<typeof BankTransferSchema>;
 export type ListTransfersInput = z.infer<typeof ListTransfersSchema>;
 export type RetryTransferInput = z.infer<typeof RetryTransferSchema>;
+export type UidInternalTransferInput = z.infer<typeof UidInternalTransferSchema>;
+export type UidBankTransferInput = z.infer<typeof UidBankTransferSchema>;

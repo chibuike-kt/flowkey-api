@@ -1,3 +1,7 @@
+/**
+ * FlowKey — Transfers Controller
+ */
+
 import type { Request, Response, NextFunction } from 'express';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import {
@@ -6,9 +10,13 @@ import {
   BankTransferSchema,
   ListTransfersSchema,
   RetryTransferSchema,
+  UidInternalTransferSchema,
+  UidBankTransferSchema,
 } from './transfers.schema';
 import {
   resolveRecipient,
+  executeUidInternalTransfer,
+  executeUidBankTransfer,
   executeInternalTransfer,
   initiateBankTransfer,
   getTransactionById,
@@ -145,6 +153,55 @@ export async function handleRetryTransfer(
     }
     const result = await retryBankTransfer(id, parseUserId(req), parsed.data.pin);
     res.json({ success: true, data: result, meta: null, error: null });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /transfers/uid/internal
+// The friend's FlowKey session is active (requireAuth). The guest types
+// their Universal ID + UPP. Transfer debits the guest's wallet, not the friend's.
+export async function handleUidInternalTransfer(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = UidInternalTransferSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
+      );
+    }
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '');
+    // Pass device_user_id (friend's user) for audit trail — sender is resolved from UID
+    const deviceUserId = req.user!.sub as string;
+    const result = await executeUidInternalTransfer(parsed.data, idempotencyKey, deviceUserId);
+    res.status(201).json({ success: true, data: result, meta: null, error: null });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /transfers/uid/bank
+export async function handleUidBankTransfer(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = UidBankTransferSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
+      );
+    }
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '');
+    const deviceUserId = req.user!.sub as string;
+    const result = await executeUidBankTransfer(parsed.data, idempotencyKey, deviceUserId);
+    res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
   }
