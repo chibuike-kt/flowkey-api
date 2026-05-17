@@ -1,20 +1,12 @@
 import { Router } from 'express';
 import { requireAuth } from '../../common/middleware/requireAuth';
-import {
-  handleGenerateQr,
-  handleDecodeQr,
-  handleListQr,
-  handleGetQr,
-  handleDeactivateQr,
-} from './qr.controller';
+import { handleGetMyQr, handleRegenerateQr, handleDecodeQr } from './qr.controller';
 
 const router = Router();
 router.use(requireAuth);
 
-router.post('/generate', handleGenerateQr);
+router.get('/me', handleGetMyQr);
 router.post('/decode', handleDecodeQr);
-router.get('/', handleListQr);
-router.get('/:id', handleGetQr);
-router.delete('/:id', handleDeactivateQr);
+router.post('/regenerate', handleRegenerateQr);
 
 export { router as qrRouter };
