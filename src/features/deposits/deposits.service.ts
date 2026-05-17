@@ -1,18 +1,9 @@
-/**
- * FlowKey — Deposits Service
- *
- * Virtual account: provision → Providus webhook → ledger credit
- * Card deposit:    add card → charge → Paystack webhook → ledger credit
- *
- * All wallet credits go through creditWallet() — the single ledger write
- * function. It is idempotent by provider_ref + wallet_id.
- */
-
 import * as crypto from 'crypto';
 import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
 import { walletCreditsTotal } from '../../common/metrics/index';
+import { sendPushNotification } from '../notifications/notification.service';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from '../auth/lockout.service';
 import { provisionVirtualAccount, verifyPaystackAuthorization } from './deposit-processor';
 import { cardDepositQueue } from '../../queues/index';
@@ -28,6 +19,30 @@ import * as argon2 from 'argon2';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
+
+// ---------------------------------------------------------------------------
+// Push notification helper — resolve FCM token by wallet ID
+// ---------------------------------------------------------------------------
+
+async function getFcmTokenByWalletId(walletId: string): Promise<string | null> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  const wallet = (await db.wallet.findUnique({
+    where: { id: walletId },
+    select: {
+      user: {
+        select: {
+          device_sessions: {
+            where: { is_revoked: false },
+            orderBy: { last_active: 'desc' },
+            take: 1,
+            select: { fcm_token: true },
+          },
+        },
+      },
+    },
+  })) as { user: { device_sessions: { fcm_token: string | null }[] } | null } | null;
+  return wallet?.user?.device_sessions?.[0]?.fcm_token ?? null;
+}
 
 function generateDepositReference(): string {
   const d = new Date();
@@ -521,6 +536,21 @@ export async function creditWallet(params: {
     channel: params.channel,
     reference: params.reference,
   });
+
+  // Push notification to wallet owner
+  const fcmToken = await getFcmTokenByWalletId(params.walletId);
+  if (fcmToken) {
+    const naira = (Number(params.amountKobo) / 100).toLocaleString('en-NG', {
+      minimumFractionDigits: 2,
+    });
+    const channelLabel = params.channel === 'card' ? 'Card' : 'Bank Transfer';
+    void sendPushNotification(
+      fcmToken,
+      `Deposit Successful`,
+      `₦${naira} deposited via ${channelLabel}`,
+      { type: 'deposit', channel: params.channel, amount_kobo: params.amountKobo.toString() },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
