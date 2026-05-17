@@ -309,7 +309,7 @@ model Transaction {
   narration          String?           @db.VarChar(255)
   reference          String            @unique @db.VarChar(64)
   idempotency_key    String            @unique @db.Uuid
-  initiator_id       String            @db.Uuid
+  initiator_id       String?           @db.Uuid
   initiator_type     InitiatorType
   sender_wallet_id   String?           @db.Uuid
   receiver_wallet_id String?           @db.Uuid

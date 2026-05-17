@@ -628,7 +628,7 @@ export async function reverseBankTransfer(
         narration:          `Reversal: bank transfer failed — ${failureReason}`,
         reference:          reversalReference,
         idempotency_key:    crypto.randomUUID(),
-        initiator_id:       '00000000-0000-0000-0000-000000000000',
+        initiator_id:       null,
         initiator_type:     'system',
         sender_wallet_id:   null,
         receiver_wallet_id: senderWalletId,
