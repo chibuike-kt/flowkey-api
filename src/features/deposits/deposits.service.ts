@@ -1,13 +1,20 @@
+/**
+ * FlowKey — Deposits Service
+ *
+ * Virtual account: provision → Providus webhook → ledger credit
+ * Card deposit:    add card → charge → Paystack webhook → ledger credit
+ *
+ * All wallet credits go through creditWallet() — the single ledger write
+ * function. It is idempotent by provider_ref + wallet_id.
+ */
+
 import * as crypto from 'crypto';
 import { prisma } from '../../common/utils/prisma';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { logger } from '../../common/utils/logger';
 import { walletCreditsTotal } from '../../common/metrics/index';
 import { assertNotLocked, recordFailedAttempt, clearLockout } from '../auth/lockout.service';
-import {
-  provisionVirtualAccount,
-  verifyPaystackAuthorization,
-} from './deposit-processor';
+import { provisionVirtualAccount, verifyPaystackAuthorization } from './deposit-processor';
 import { cardDepositQueue } from '../../queues/index';
 import type {
   VirtualAccount,
@@ -447,7 +454,7 @@ export async function creditWallet(params: {
           narration: params.narration,
           reference: params.reference,
           idempotency_key: crypto.randomUUID(),
-          initiator_id: '00000000-0000-0000-0000-000000000000',
+          initiator_id: null,
           initiator_type: 'system',
           sender_wallet_id: null,
           receiver_wallet_id: params.walletId,

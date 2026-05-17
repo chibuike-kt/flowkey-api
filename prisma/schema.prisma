@@ -26,11 +26,11 @@ generator client {
 
 datasource db {
   provider          = "postgresql"
-  // DATABASE_URL    — Supabase pooled URL (port 6543, PgBouncer)
+  // DATABASE_URL    â€” Supabase pooled URL (port 6543, PgBouncer)
   //                   Used by the running application.
   //                   Format: postgresql://user:pass@host:6543/db?pgbouncer=true
   url               = env("DATABASE_URL")
-  // DIRECT_URL      — Supabase direct URL (port 5432, no pooler)
+  // DIRECT_URL      â€” Supabase direct URL (port 5432, no pooler)
   //                   Used ONLY by prisma migrate and prisma studio.
   //                   Never used by the running application.
   directUrl         = env("DIRECT_URL")
@@ -158,7 +158,7 @@ model User {
   email                   String?       @unique @db.VarChar(255)
   username                String?       @unique @db.VarChar(30)
   display_name            String?       @db.VarChar(100)
-  universal_id            String        @unique @db.VarChar(30)
+  universal_id            String        @unique @db.VarChar(20)
   universal_id_revoked_at DateTime?     @db.Timestamptz
   registration_channel    String?       @db.VarChar(10)  // 'phone' | 'email'
   registration_step       String?       @default("otp_pending") @db.VarChar(30)
