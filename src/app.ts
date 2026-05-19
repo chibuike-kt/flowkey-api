@@ -22,6 +22,7 @@ import { testDepositRouter } from './features/deposits/test-deposit.router'; // 
 import { cardsRouter } from './features/cards/cards.router';
 import { beneficiariesRouter } from './features/beneficiaries/beneficiaries.router';
 import { paymentRequestsRouter } from './features/payment-requests/payment-requests.router';
+import { billsRouter } from './features/bills/bills.router';
 import { flagsRouter } from './features/admin/flags.router';
 import { webhooksRouter } from './features/webhooks/webhooks.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
@@ -153,6 +154,7 @@ export function createApp(): express.Application {
   app.use(`${apiPrefix}/cards`, cardsRouter);
   app.use(`${apiPrefix}/beneficiaries`, beneficiariesRouter);
   app.use(`${apiPrefix}/payment-requests`, paymentRequestsRouter);
+  app.use(`${apiPrefix}/bills`, billsRouter);
 
   // Admin — internal only, protected by ADMIN_API_KEY header
   app.use('/admin/flags', flagsRouter);

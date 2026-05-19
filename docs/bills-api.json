@@ -1,0 +1,777 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowKey Bills API",
+    "version": "1.0.0",
+    "description": "Bill payments via VTPass — Airtime, Data, TV, Electricity, Education.\n\n## Base URL\n`https://api.flowkey.app/api/v1`\n\n## Authentication\nAll endpoints require `Authorization: Bearer <access_token>`.\n\n## Idempotency\nAll payment endpoints (POST for airtime, data, TV, electricity, education) require `Idempotency-Key: <uuid-v4>`. Verification and list endpoints do not.\n\n## Payment flow\n1. FlowKey validates your PIN and checks your balance\n2. Your wallet is debited immediately\n3. FlowKey calls VTPass\n4. On success (`delivered`) — service is activated, push notification sent\n5. On pending (`099`) — status stays `pending`, requery is scheduled automatically\n6. On failure — wallet is refunded automatically, status becomes `refunded`\n\n## Monetary values\nAll `amount_kobo` fields are integers in kobo. `amount_kobo / 100 = naira`.\n\n## Status values\n| Status | Meaning |\n|---|---|\n| `pending` | Queued, VTPass not yet called |\n| `processing` | VTPass call in progress |\n| `delivered` | Successfully completed |\n| `failed` | VTPass rejected — refund pending |\n| `refunded` | Failed + wallet credit returned |\n\n## KYC daily limits\nAirtime uses the `airtime` limit. Data, TV, electricity, and education use the `other_bills` limit.\n\n| KYC Tier | Airtime daily limit | Other bills daily limit |\n|---|---|---|\n| Tier 1 (default) | ₦50,000 | ₦500,000 |\n| Tier 2 (BVN+NIN) | ₦200,000 | ₦1,000,000 |\n| Tier 3 (Address) | ₦200,000 | ₦1,000,000 |"
+  },
+  "servers": [
+    { "url": "http://localhost:3000/api/v1", "description": "Local development" },
+    { "url": "https://api.flowkey.app/api/v1", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Bills — Airtime", "description": "MTN, Airtel, Glo, 9mobile airtime top-up" },
+    { "name": "Bills — Data", "description": "Mobile data bundle subscriptions" },
+    { "name": "Bills — TV", "description": "DSTV, GOTV, Startimes, Showmax subscription" },
+    { "name": "Bills — Electricity", "description": "All 12 Nigerian DISCO electricity payments" },
+    { "name": "Bills — Education", "description": "WAEC and JAMB payment pins" },
+    { "name": "Bills — History", "description": "Bill transaction history and status requery" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" },
+        "description": "UUID v4. Duplicate requests with the same key return the original response without re-executing the payment."
+      }
+    },
+    "schemas": {
+      "BillRecord": {
+        "type": "object",
+        "description": "A bill payment transaction record.",
+        "properties": {
+          "id":                 { "type": "string", "format": "uuid" },
+          "user_id":            { "type": "string", "format": "uuid" },
+          "wallet_id":          { "type": "string", "format": "uuid" },
+          "category":           { "type": "string", "enum": ["airtime", "data", "tv", "electricity", "education"] },
+          "service_id":         { "type": "string", "description": "VTPass serviceID e.g. mtn, dstv, ikeja-electric" },
+          "transaction_number": { "type": "string", "example": "TXN-A1B2C3", "description": "Short human-readable reference" },
+          "reference":          { "type": "string", "example": "BILL-20260519-A1B2C3" },
+          "vtpass_request_id":  { "type": "string", "description": "VTPass request ID used for requery" },
+          "vtpass_order_id":    { "type": "string", "nullable": true, "description": "VTPass internal transaction ID — present after provider processes the request" },
+          "status":             { "type": "string", "enum": ["pending", "processing", "delivered", "failed", "refunded"] },
+          "amount_kobo":        { "type": "string", "example": "50000", "description": "Amount charged in kobo" },
+          "fee_kobo":           { "type": "string", "example": "0" },
+          "narration":          { "type": "string" },
+          "recipient":          { "$ref": "#/components/schemas/BillRecipient" },
+          "purchased_code":     { "type": "string", "nullable": true, "description": "Electricity token for prepaid meters" },
+          "units":              { "type": "string", "nullable": true, "description": "Electricity units credited e.g. 109.9 kWh" },
+          "created_at":         { "type": "string", "format": "date-time" },
+          "completed_at":       { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "BillRecipient": {
+        "type": "object",
+        "description": "Recipient details — fields present depend on category.",
+        "properties": {
+          "phone":         { "type": "string", "description": "Airtime / data — recipient phone number" },
+          "network":       { "type": "string", "description": "Airtime / data — network name" },
+          "plan_name":     { "type": "string", "description": "Data — plan/bundle name" },
+          "smartcard":     { "type": "string", "description": "TV — smartcard / IUC number" },
+          "provider":      { "type": "string", "description": "TV — provider name" },
+          "bouquet":       { "type": "string", "description": "TV — subscription plan" },
+          "customer_name": { "type": "string", "nullable": true, "description": "TV / electricity — customer name from provider" },
+          "meter_number":  { "type": "string", "description": "Electricity — meter number" },
+          "meter_type":    { "type": "string", "enum": ["prepaid", "postpaid"], "description": "Electricity — meter type" },
+          "disco":         { "type": "string", "description": "Electricity — distribution company ID" },
+          "address":       { "type": "string", "nullable": true, "description": "Electricity — customer address" },
+          "exam_type":     { "type": "string", "description": "Education — exam product" },
+          "quantity":      { "type": "integer", "description": "Education — number of pins purchased" }
+        }
+      },
+      "DataPlan": {
+        "type": "object",
+        "properties": {
+          "code":   { "type": "string", "example": "mtn-1gb", "description": "Pass as variation_code when buying data" },
+          "name":   { "type": "string", "example": "MTN 1GB - 30 Days" },
+          "amount": { "type": "number", "example": 1000, "description": "Price in naira" }
+        }
+      },
+      "TvPlan": {
+        "type": "object",
+        "properties": {
+          "code":   { "type": "string", "example": "dstv-compact", "description": "Pass as variation_code when paying TV" },
+          "name":   { "type": "string", "example": "DStv Compact" },
+          "amount": { "type": "number", "example": 15700, "description": "Price in naira" }
+        }
+      },
+      "DiscoInfo": {
+        "type": "object",
+        "properties": {
+          "id":   { "type": "string", "example": "ikeja-electric", "description": "Pass as disco field when verifying/paying electricity" },
+          "name": { "type": "string", "example": "Ikeja Electric (IKEDC)" }
+        }
+      },
+      "SmartcardVerification": {
+        "type": "object",
+        "properties": {
+          "customer_name":   { "type": "string", "example": "KINGSLEY CHIBUIKE" },
+          "current_bouquet": { "type": "string", "example": "DStv Compact", "description": "Currently subscribed plan" },
+          "renewal_amount":  { "type": "number", "example": 15700, "description": "Amount in naira to renew current plan" },
+          "due_date":        { "type": "string", "example": "2026-06-17", "description": "Subscription expiry date" }
+        }
+      },
+      "MeterVerification": {
+        "type": "object",
+        "properties": {
+          "customer_name":    { "type": "string", "example": "KINGSLEY CHIBUIKE" },
+          "customer_address": { "type": "string", "example": "14 Admiralty Way, Lekki Phase 1" },
+          "meter_type":       { "type": "string", "enum": ["prepaid", "postpaid"] }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "data":    { "nullable": true, "example": null },
+          "meta":    { "nullable": true, "example": null },
+          "error":   { "type": "object", "properties": { "code": { "type": "string" }, "message": { "type": "string" } } }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "next_cursor": { "type": "string", "format": "uuid", "nullable": true },
+          "limit":       { "type": "integer" }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized":      { "description": "Missing or invalid Bearer token.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "ValidationError":   { "description": "Request validation failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "NotFound":          { "description": "Resource not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "InsufficientFunds": { "description": "Insufficient wallet balance or daily limit exceeded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "CONFLICT", "message": "Insufficient balance." } } } } },
+      "ServiceUnavailable":{ "description": "VTPass temporarily unavailable — wallet has been refunded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "EXTERNAL_SERVICE_ERROR", "message": "Airtime service temporarily unavailable. Your wallet has been refunded." } } } } }
+    }
+  },
+  "paths": {
+    "/bills/airtime": {
+      "post": {
+        "tags": ["Bills — Airtime"],
+        "operationId": "buyAirtime",
+        "summary": "Buy airtime",
+        "description": "Top up airtime for any Nigerian network. Wallet is debited immediately and VTPass is called synchronously — airtime is typically delivered within seconds.\n\n## Networks\n- `mtn` — MTN Nigeria\n- `airtel` — Airtel Nigeria\n- `glo` — Glo Mobile\n- `9mobile` — 9mobile (formerly Etisalat)\n\n## Limits\n- Minimum: ₦50 (5,000 kobo)\n- Maximum per transaction: ₦50,000 (5,000,000 kobo)\n- Daily limit: subject to KYC tier airtime limit\n\n## Phone number\nPass the recipient's number in local format (`08012345678`) or E.164 (`+2348012345678`). This can be a different number from the account holder's — airtime can be bought for anyone.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["network", "phone", "amount_kobo", "pin"],
+                "properties": {
+                  "network":     { "type": "string", "enum": ["mtn", "airtel", "glo", "9mobile"] },
+                  "phone":       { "type": "string", "description": "Recipient phone number. Local (08012345678) or E.164 (+2348012345678).", "example": "08012345678" },
+                  "amount_kobo": { "type": "integer", "minimum": 5000, "maximum": 5000000, "description": "Amount in kobo. Min ₦50, max ₦50,000.", "example": 100000 },
+                  "pin":         { "type": "string", "pattern": "^\\d{4}$", "description": "4-digit transaction PIN" }
+                }
+              },
+              "examples": {
+                "mtn_1k":    { "summary": "MTN ₦1,000", "value": { "network": "mtn", "phone": "08012345678", "amount_kobo": 100000, "pin": "1234" } },
+                "airtel_500":{ "summary": "Airtel ₦500", "value": { "network": "airtel", "phone": "07012345678", "amount_kobo": 50000, "pin": "1234" } },
+                "glo_200":   { "summary": "Glo ₦200", "value": { "network": "glo", "phone": "08112345678", "amount_kobo": 20000, "pin": "1234" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Airtime purchased. Status `delivered` means it has been sent.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/BillRecord" }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": "uuid", "category": "airtime", "service_id": "mtn",
+                    "transaction_number": "TXN-A1B2C3", "reference": "BILL-20260519-A1B2C3",
+                    "status": "delivered", "amount_kobo": "100000", "fee_kobo": "0",
+                    "narration": "MTN airtime top-up for 08012345678",
+                    "recipient": { "phone": "08012345678", "network": "mtn" },
+                    "purchased_code": null, "units": null,
+                    "created_at": "2026-05-19T10:00:00.000Z", "completed_at": "2026-05-19T10:00:02.000Z"
+                  },
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN, PIN locked, or account inactive." },
+          "409": { "$ref": "#/components/responses/InsufficientFunds" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/bills/data/plans": {
+      "get": {
+        "tags": ["Bills — Data"],
+        "operationId": "getDataPlans",
+        "summary": "List available data plans for a network",
+        "description": "Returns all available data bundles for the specified network. Use the returned `code` as `variation_code` when calling `POST /bills/data`.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "network", "in": "query", "required": true, "schema": { "type": "string", "enum": ["mtn", "airtel", "glo", "9mobile"] }, "example": "mtn" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Data plans for the selected network.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/DataPlan" } }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "example": {
+                  "success": true,
+                  "data": [
+                    { "code": "mtn-10mb-100", "name": "MTN 10MB Daily", "amount": 100 },
+                    { "code": "mtn-1gb", "name": "MTN 1GB - 30 Days", "amount": 1000 },
+                    { "code": "mtn-2gb", "name": "MTN 2GB - 30 Days", "amount": 2000 },
+                    { "code": "mtn-5gb", "name": "MTN 5GB - 30 Days", "amount": 3500 },
+                    { "code": "mtn-10gb", "name": "MTN 10GB - 30 Days", "amount": 6000 }
+                  ],
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/bills/data": {
+      "post": {
+        "tags": ["Bills — Data"],
+        "operationId": "buyData",
+        "summary": "Buy a data bundle",
+        "description": "Purchase a data bundle for any Nigerian network. Call `GET /bills/data/plans?network=mtn` first to get available plans and their `code` values.\n\n## Flow\n1. Call `GET /bills/data/plans?network=<network>` to get plans\n2. User selects a plan — use its `code` as `variation_code`\n3. Use the plan's `amount` (in naira × 100) as `amount_kobo`\n4. Call this endpoint with PIN",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["network", "phone", "variation_code", "amount_kobo", "pin"],
+                "properties": {
+                  "network":        { "type": "string", "enum": ["mtn", "airtel", "glo", "9mobile"] },
+                  "phone":          { "type": "string", "description": "Phone number to receive the data bundle", "example": "08012345678" },
+                  "variation_code": { "type": "string", "description": "Plan code from GET /bills/data/plans", "example": "mtn-1gb" },
+                  "amount_kobo":    { "type": "integer", "positive": true, "description": "Amount in kobo — must match the plan price", "example": 100000 },
+                  "pin":            { "type": "string", "pattern": "^\\d{4}$" }
+                }
+              },
+              "examples": {
+                "mtn_1gb":    { "summary": "MTN 1GB bundle", "value": { "network": "mtn", "phone": "08012345678", "variation_code": "mtn-1gb", "amount_kobo": 100000, "pin": "1234" } },
+                "airtel_2gb": { "summary": "Airtel 2GB bundle", "value": { "network": "airtel", "phone": "07012345678", "variation_code": "airtel-2gb", "amount_kobo": 200000, "pin": "1234" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Data bundle purchased.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": "uuid", "category": "data", "service_id": "mtn-data",
+                    "transaction_number": "TXN-B2C3D4", "reference": "BILL-20260519-B2C3D4",
+                    "status": "delivered", "amount_kobo": "100000", "fee_kobo": "0",
+                    "narration": "MTN data subscription for 08012345678",
+                    "recipient": { "phone": "08012345678", "network": "mtn", "plan_name": "mtn-1gb" },
+                    "purchased_code": null, "units": null,
+                    "created_at": "2026-05-19T10:05:00.000Z", "completed_at": "2026-05-19T10:05:03.000Z"
+                  },
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN or PIN locked." },
+          "409": { "$ref": "#/components/responses/InsufficientFunds" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/bills/tv/plans": {
+      "get": {
+        "tags": ["Bills — TV"],
+        "operationId": "getTvPlans",
+        "summary": "List TV subscription plans for a provider",
+        "description": "Returns available bouquets for the selected provider. Use the returned `code` as `variation_code` when paying.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "provider", "in": "query", "required": true, "schema": { "type": "string", "enum": ["dstv", "gotv", "startimes", "showmax"] }, "example": "dstv" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription plans for the selected provider.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    { "code": "dstv-padi",         "name": "DStv Padi",         "amount": 2950 },
+                    { "code": "dstv-yanga",         "name": "DStv Yanga",        "amount": 4150 },
+                    { "code": "dstv-confam",        "name": "DStv Confam",       "amount": 6200 },
+                    { "code": "dstv-compact",       "name": "DStv Compact",      "amount": 15700 },
+                    { "code": "dstv-compact-plus",  "name": "DStv Compact Plus", "amount": 25700 },
+                    { "code": "dstv-premium",       "name": "DStv Premium",      "amount": 37000 }
+                  ],
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/bills/tv/verify": {
+      "post": {
+        "tags": ["Bills — TV"],
+        "operationId": "verifySmartcard",
+        "summary": "Verify a smartcard / IUC number",
+        "description": "Look up a customer's current subscription, renewal amount, and expiry date before payment. Always call this before `POST /bills/tv` to:\n- Confirm the smartcard number is valid\n- Show the customer their name and current plan\n- Pre-fill the renewal amount\n\nNo money is moved. No PIN required.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["provider", "smartcard"],
+                "properties": {
+                  "provider":  { "type": "string", "enum": ["dstv", "gotv", "startimes", "showmax"] },
+                  "smartcard": { "type": "string", "minLength": 5, "maxLength": 20, "description": "The smartcard / IUC number on the decoder", "example": "1212121212" }
+                }
+              },
+              "examples": {
+                "dstv":      { "summary": "Verify DSTV smartcard", "value": { "provider": "dstv", "smartcard": "1212121212" } },
+                "gotv":      { "summary": "Verify GOtv smartcard", "value": { "provider": "gotv", "smartcard": "1212121212" } },
+                "startimes": { "summary": "Verify Startimes smartcard", "value": { "provider": "startimes", "smartcard": "9876543210" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Smartcard verified. Use `renewal_amount` × 100 as `amount_kobo` for same-plan renewal.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/SmartcardVerification" }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "customer_name":   "KINGSLEY CHIBUIKE",
+                    "current_bouquet": "DStv Compact",
+                    "renewal_amount":  15700,
+                    "due_date":        "2026-06-17"
+                  },
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "description": "Invalid smartcard number or provider could not verify.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "Could not verify smartcard: Invalid smartcard number" } } } } }
+        }
+      }
+    },
+    "/bills/tv": {
+      "post": {
+        "tags": ["Bills — TV"],
+        "operationId": "payTv",
+        "summary": "Pay TV subscription",
+        "description": "Renew or upgrade a DSTV, GOTV, Startimes, or Showmax subscription.\n\n## Flow\n1. `POST /bills/tv/verify` — confirm smartcard, get customer name and renewal amount\n2. `GET /bills/tv/plans?provider=dstv` — get available bouquets\n3. User confirms or selects a new plan\n4. `POST /bills/tv` with the smartcard, plan code, and PIN\n\n## Renewal vs upgrade\n- **Renewal** (same plan): use `renewal_amount` from verify × 100 as `amount_kobo` and the same `variation_code` as the current plan\n- **Upgrade** (new plan): use the new plan's `amount` × 100 and its `variation_code`",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["provider", "smartcard", "variation_code", "amount_kobo", "pin"],
+                "properties": {
+                  "provider":       { "type": "string", "enum": ["dstv", "gotv", "startimes", "showmax"] },
+                  "smartcard":      { "type": "string", "minLength": 5, "maxLength": 20, "description": "Smartcard / IUC number", "example": "1212121212" },
+                  "variation_code": { "type": "string", "description": "Bouquet code from GET /bills/tv/plans", "example": "dstv-compact" },
+                  "amount_kobo":    { "type": "integer", "positive": true, "description": "Amount in kobo. Must match the plan price.", "example": 1570000 },
+                  "phone":          { "type": "string", "description": "Optional contact phone for the subscription", "example": "08012345678" },
+                  "pin":            { "type": "string", "pattern": "^\\d{4}$" }
+                }
+              },
+              "examples": {
+                "dstv_compact":  { "summary": "DSTV Compact renewal", "value": { "provider": "dstv", "smartcard": "1212121212", "variation_code": "dstv-compact", "amount_kobo": 1570000, "phone": "08012345678", "pin": "1234" } },
+                "gotv_max":      { "summary": "GOtv Max renewal", "value": { "provider": "gotv", "smartcard": "1212121212", "variation_code": "gotv-max", "amount_kobo": 485000, "pin": "1234" } },
+                "dstv_premium":  { "summary": "DSTV Premium upgrade", "value": { "provider": "dstv", "smartcard": "1212121212", "variation_code": "dstv-premium", "amount_kobo": 3700000, "pin": "1234" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "TV subscription renewed.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": "uuid", "category": "tv", "service_id": "dstv",
+                    "transaction_number": "TXN-C3D4E5", "reference": "BILL-20260519-C3D4E5",
+                    "status": "delivered", "amount_kobo": "1570000", "fee_kobo": "0",
+                    "narration": "DSTV subscription — dstv-compact",
+                    "recipient": { "smartcard": "1212121212", "provider": "dstv", "bouquet": "dstv-compact" },
+                    "purchased_code": null, "units": null,
+                    "created_at": "2026-05-19T10:10:00.000Z", "completed_at": "2026-05-19T10:10:04.000Z"
+                  },
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN or PIN locked." },
+          "409": { "$ref": "#/components/responses/InsufficientFunds" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/bills/electricity/discos": {
+      "get": {
+        "tags": ["Bills — Electricity"],
+        "operationId": "getDiscos",
+        "summary": "List electricity distribution companies (DISCOs)",
+        "description": "Returns all 12 supported Nigerian DISCOs. Use the returned `id` as the `disco` field when verifying and paying electricity.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "DISCO list.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/DiscoInfo" } }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "example": {
+                  "success": true,
+                  "data": [
+                    { "id": "ikeja-electric",  "name": "Ikeja Electric (IKEDC)" },
+                    { "id": "eko-electric",    "name": "Eko Electric (EKEDC)" },
+                    { "id": "kano-electric",   "name": "Kano Electric (KEDCO)" },
+                    { "id": "phed",            "name": "Port Harcourt Electric (PHED)" },
+                    { "id": "jos-electric",    "name": "Jos Electric (JED)" },
+                    { "id": "ibadan-electric", "name": "Ibadan Electric (IBEDC)" },
+                    { "id": "kaduna-electric", "name": "Kaduna Electric (KAEDCO)" },
+                    { "id": "abuja-electric",  "name": "Abuja Electric (AEDC)" },
+                    { "id": "enugu-electric",  "name": "Enugu Electric (EEDC)" },
+                    { "id": "benin-electric",  "name": "Benin Electric (BEDC)" },
+                    { "id": "aba-electric",    "name": "Aba Electric (ABEDC)" },
+                    { "id": "yola-electric",   "name": "Yola Electric (YEDC)" }
+                  ],
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/bills/electricity/verify": {
+      "post": {
+        "tags": ["Bills — Electricity"],
+        "operationId": "verifyMeter",
+        "summary": "Verify a meter number",
+        "description": "Look up a meter number before paying. Returns the customer name, address, and meter type. Always call this before `POST /bills/electricity`.\n\nNo money is moved. No PIN required.\n\n## Prepaid vs postpaid\n- **Prepaid** — customer pays before consuming. A token is generated on successful payment and loaded onto the meter.\n- **Postpaid** — customer pays monthly bill. No token is generated.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["disco", "meter_number", "meter_type"],
+                "properties": {
+                  "disco":        { "type": "string", "description": "DISCO ID from GET /bills/electricity/discos", "example": "ikeja-electric" },
+                  "meter_number": { "type": "string", "minLength": 5, "maxLength": 20, "description": "Meter number printed on the meter or bill", "example": "12345678901" },
+                  "meter_type":   { "type": "string", "enum": ["prepaid", "postpaid"] }
+                }
+              },
+              "examples": {
+                "prepaid_ikeja":   { "summary": "Ikeja Electric prepaid meter", "value": { "disco": "ikeja-electric", "meter_number": "12345678901", "meter_type": "prepaid" } },
+                "postpaid_eko":    { "summary": "Eko Electric postpaid meter", "value": { "disco": "eko-electric",   "meter_number": "10101010101", "meter_type": "postpaid" } },
+                "prepaid_abuja":   { "summary": "Abuja Electric prepaid meter", "value": { "disco": "abuja-electric", "meter_number": "54321098765", "meter_type": "prepaid" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Meter verified. Confirm the customer name with the user before proceeding to payment.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/MeterVerification" }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "examples": {
+                  "prepaid":  { "summary": "Prepaid meter verified", "value": { "success": true, "data": { "customer_name": "KINGSLEY CHIBUIKE", "customer_address": "14 Admiralty Way, Lekki Phase 1", "meter_type": "prepaid" }, "meta": null, "error": null } },
+                  "postpaid": { "summary": "Postpaid meter verified", "value": { "success": true, "data": { "customer_name": "ADAEZE OKAFOR", "customer_address": "5 Allen Avenue, Ikeja", "meter_type": "postpaid" }, "meta": null, "error": null } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "description": "Invalid meter number or DISCO could not verify.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "example": { "success": false, "data": null, "meta": null, "error": { "code": "VALIDATION_ERROR", "message": "Could not verify meter: Invalid meter number" } } } } }
+        }
+      }
+    },
+    "/bills/electricity": {
+      "post": {
+        "tags": ["Bills — Electricity"],
+        "operationId": "payElectricity",
+        "summary": "Pay electricity bill",
+        "description": "Pay an electricity bill for any Nigerian DISCO.\n\n## Flow\n1. `GET /bills/electricity/discos` — user selects their DISCO\n2. `POST /bills/electricity/verify` — confirm meter number, get customer name\n3. User enters amount and PIN\n4. `POST /bills/electricity` — payment executed\n\n## Prepaid token\nFor prepaid meters, a token is returned in `purchased_code` and `units` on the bill record after delivery. Display this prominently — the user needs it to load units onto their meter.\n\n## Minimum amount\nMinimum electricity payment is ₦500 (50,000 kobo).",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["disco", "meter_number", "meter_type", "amount_kobo", "phone", "pin"],
+                "properties": {
+                  "disco":          { "type": "string", "description": "DISCO ID from GET /bills/electricity/discos", "example": "ikeja-electric" },
+                  "meter_number":   { "type": "string", "minLength": 5, "maxLength": 20, "description": "Must match what was used in verify", "example": "12345678901" },
+                  "meter_type":     { "type": "string", "enum": ["prepaid", "postpaid"] },
+                  "amount_kobo":    { "type": "integer", "minimum": 50000, "description": "Amount in kobo. Minimum ₦500 (50,000 kobo).", "example": 500000 },
+                  "phone":          { "type": "string", "description": "Contact phone number for receipt", "example": "08012345678" },
+                  "customer_name":  { "type": "string", "description": "Optional — customer name from verify for display", "example": "KINGSLEY CHIBUIKE" },
+                  "pin":            { "type": "string", "pattern": "^\\d{4}$" }
+                }
+              },
+              "examples": {
+                "prepaid_5k":    { "summary": "Prepaid ₦5,000", "value": { "disco": "ikeja-electric", "meter_number": "12345678901", "meter_type": "prepaid", "amount_kobo": 500000, "phone": "08012345678", "customer_name": "KINGSLEY CHIBUIKE", "pin": "1234" } },
+                "postpaid_10k":  { "summary": "Postpaid ₦10,000", "value": { "disco": "eko-electric", "meter_number": "10101010101", "meter_type": "postpaid", "amount_kobo": 1000000, "phone": "08012345678", "pin": "1234" } },
+                "prepaid_20k":   { "summary": "Prepaid ₦20,000", "value": { "disco": "abuja-electric", "meter_number": "54321098765", "meter_type": "prepaid", "amount_kobo": 2000000, "phone": "08012345678", "pin": "1234" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Electricity payment successful. For prepaid, `purchased_code` contains the meter token.",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "prepaid": {
+                    "summary": "Prepaid — token generated",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "id": "uuid", "category": "electricity", "service_id": "ikeja-electric",
+                        "transaction_number": "TXN-D4E5F6", "reference": "BILL-20260519-D4E5F6",
+                        "status": "delivered", "amount_kobo": "500000", "fee_kobo": "0",
+                        "narration": "ikeja-electric electricity — meter ****8901",
+                        "recipient": { "meter_number": "12345678901", "meter_type": "prepaid", "disco": "ikeja-electric" },
+                        "purchased_code": "1234-5678-9012-3456",
+                        "units": "109.9 kWh",
+                        "created_at": "2026-05-19T10:15:00.000Z", "completed_at": "2026-05-19T10:15:05.000Z"
+                      },
+                      "meta": null, "error": null
+                    }
+                  },
+                  "postpaid": {
+                    "summary": "Postpaid — no token",
+                    "value": {
+                      "success": true,
+                      "data": {
+                        "id": "uuid", "category": "electricity", "service_id": "eko-electric",
+                        "transaction_number": "TXN-E5F6G7", "reference": "BILL-20260519-E5F6G7",
+                        "status": "delivered", "amount_kobo": "1000000", "fee_kobo": "0",
+                        "narration": "eko-electric electricity — meter ****0101",
+                        "recipient": { "meter_number": "10101010101", "meter_type": "postpaid", "disco": "eko-electric" },
+                        "purchased_code": null, "units": null,
+                        "created_at": "2026-05-19T10:16:00.000Z", "completed_at": "2026-05-19T10:16:04.000Z"
+                      },
+                      "meta": null, "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN or PIN locked." },
+          "409": { "$ref": "#/components/responses/InsufficientFunds" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/bills/education": {
+      "post": {
+        "tags": ["Bills — Education"],
+        "operationId": "payEducation",
+        "summary": "Buy WAEC or JAMB pin",
+        "description": "Purchase education payment pins.\n\n## Products\n- `waec-registration` — WAEC school registration\n- `waec` — WAEC result checker scratch card\n- `jamb` — JAMB UTME / Direct Entry pin\n\nThe purchased pin(s) are returned in `purchased_code` on the bill record after delivery.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["product", "amount_kobo", "phone", "pin"],
+                "properties": {
+                  "product":     { "type": "string", "enum": ["waec-registration", "waec", "jamb"], "description": "Education product type" },
+                  "quantity":    { "type": "integer", "minimum": 1, "maximum": 5, "default": 1, "description": "Number of pins to purchase. Max 5 per transaction." },
+                  "amount_kobo": { "type": "integer", "positive": true, "description": "Total amount in kobo for all pins", "example": 350000 },
+                  "phone":       { "type": "string", "description": "Contact phone number", "example": "08012345678" },
+                  "pin":         { "type": "string", "pattern": "^\\d{4}$" }
+                }
+              },
+              "examples": {
+                "waec_result":    { "summary": "WAEC result checker", "value": { "product": "waec", "quantity": 1, "amount_kobo": 350000, "phone": "08012345678", "pin": "1234" } },
+                "jamb_utme":      { "summary": "JAMB UTME pin", "value": { "product": "jamb", "quantity": 1, "amount_kobo": 470000, "phone": "08012345678", "pin": "1234" } },
+                "waec_reg":       { "summary": "WAEC registration", "value": { "product": "waec-registration", "quantity": 1, "amount_kobo": 1690000, "phone": "08012345678", "pin": "1234" } },
+                "waec_bulk":      { "summary": "3 WAEC result checkers", "value": { "product": "waec", "quantity": 3, "amount_kobo": 1050000, "phone": "08012345678", "pin": "1234" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Education pin purchased. `purchased_code` contains the pin(s).",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": "uuid", "category": "education", "service_id": "waec",
+                    "transaction_number": "TXN-F6G7H8", "reference": "BILL-20260519-F6G7H8",
+                    "status": "delivered", "amount_kobo": "350000", "fee_kobo": "0",
+                    "narration": "WAEC — qty 1",
+                    "recipient": { "exam_type": "waec", "quantity": 1, "phone": "08012345678" },
+                    "purchased_code": "PIN-WAEC-1234567890",
+                    "units": null,
+                    "created_at": "2026-05-19T10:20:00.000Z", "completed_at": "2026-05-19T10:20:03.000Z"
+                  },
+                  "meta": null, "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "Wrong PIN or PIN locked." },
+          "409": { "$ref": "#/components/responses/InsufficientFunds" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/bills": {
+      "get": {
+        "tags": ["Bills — History"],
+        "operationId": "listBills",
+        "summary": "List bill transaction history",
+        "description": "Returns all bill transactions for the authenticated user, newest first. Filter by category or status.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "category", "in": "query", "schema": { "type": "string", "enum": ["airtime", "data", "tv", "electricity", "education", "all"], "default": "all" }, "description": "Filter by category" },
+          { "name": "status",   "in": "query", "schema": { "type": "string", "enum": ["pending", "processing", "delivered", "failed", "refunded"] }, "description": "Filter by status" },
+          { "name": "cursor",   "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Pagination cursor from previous `meta.next_cursor`" },
+          { "name": "limit",    "in": "query", "schema": { "type": "integer", "default": 20, "maximum": 50 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bill transaction list.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": "uuid-1", "category": "airtime", "service_id": "mtn",
+                      "transaction_number": "TXN-A1B2C3", "reference": "BILL-20260519-A1B2C3",
+                      "status": "delivered", "amount_kobo": "100000", "fee_kobo": "0",
+                      "narration": "MTN airtime top-up for 08012345678",
+                      "recipient": { "phone": "08012345678", "network": "mtn" },
+                      "purchased_code": null, "units": null,
+                      "created_at": "2026-05-19T10:00:00.000Z", "completed_at": "2026-05-19T10:00:02.000Z"
+                    },
+                    {
+                      "id": "uuid-2", "category": "electricity", "service_id": "ikeja-electric",
+                      "transaction_number": "TXN-D4E5F6", "reference": "BILL-20260519-D4E5F6",
+                      "status": "delivered", "amount_kobo": "500000", "fee_kobo": "0",
+                      "narration": "ikeja-electric electricity — meter ****8901",
+                      "recipient": { "meter_number": "12345678901", "meter_type": "prepaid", "disco": "ikeja-electric" },
+                      "purchased_code": "1234-5678-9012-3456", "units": "109.9 kWh",
+                      "created_at": "2026-05-19T10:15:00.000Z", "completed_at": "2026-05-19T10:15:05.000Z"
+                    }
+                  ],
+                  "meta": { "next_cursor": null, "limit": 20 },
+                  "error": null
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/bills/{id}": {
+      "get": {
+        "tags": ["Bills — History"],
+        "operationId": "getBill",
+        "summary": "Get bill transaction detail",
+        "description": "Returns full detail for a single bill transaction. For electricity prepaid payments, `purchased_code` contains the meter token and `units` contains the credited kWh.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Bill transaction ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bill transaction detail.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/BillRecord" }, "meta": { "nullable": true }, "error": { "nullable": true } } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/bills/{id}/requery": {
+      "post": {
+        "tags": ["Bills — History"],
+        "operationId": "requeryBill",
+        "summary": "Manually requery bill status from VTPass",
+        "description": "Re-check the status of a pending bill transaction directly with VTPass. Useful when a transaction has been `pending` longer than expected.\n\nThis is called automatically by the system at 30s, 60s, and 120s intervals for all pending transactions. Use this endpoint if the user wants an immediate update.\n\nIf VTPass confirms delivery, the status is updated to `delivered` immediately. If still pending, the status is unchanged.",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Bill transaction ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated bill record.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "$ref": "#/components/schemas/BillRecord" }, "meta": { "nullable": true }, "error": { "nullable": true } } },
+                "examples": {
+                  "now_delivered": { "summary": "VTPass confirmed delivery", "value": { "success": true, "data": { "id": "uuid", "status": "delivered", "completed_at": "2026-05-19T10:05:30.000Z" }, "meta": null, "error": null } },
+                  "still_pending": { "summary": "Still pending", "value": { "success": true, "data": { "id": "uuid", "status": "pending", "completed_at": null }, "meta": null, "error": null } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  }
+}

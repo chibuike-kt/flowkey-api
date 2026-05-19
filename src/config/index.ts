@@ -80,14 +80,9 @@ export interface AppConfig {
   premblyCircuitBreakerThreshold: number;
   premblyCircuitBreakerCooldownMs: number;
 
-  // KYC — per-tier transfer limits (kobo)
-  kycTier0DailyLimit: bigint; // unverified — no transfers
-  kycTier1DailyLimit: bigint; // BVN verified
-  kycTier2DailyLimit: bigint; // NIN + selfie
-  kycTier3DailyLimit: bigint; // address + docs
-  kycTier1SingleLimit: bigint;
-  kycTier2SingleLimit: bigint;
-  kycTier3SingleLimit: bigint;
+  // KYC — cooldown hours between upgrade attempts
+  // Transfer limits are defined in src/features/kyc/kyc.types.ts (TIER_LIMITS)
+  // and are NOT sourced from config to avoid mismatch.
   kycCooldownTier1Hours: number;
   kycCooldownTier2PlusHours: number;
 
@@ -112,6 +107,11 @@ export interface AppConfig {
   queuePrefix: string;
   queueDefaultRetries: number;
   queueDefaultBackoffMs: number;
+
+  // VTPass
+  vtpassApiKey: string;
+  vtpassPublicKey: string;
+  vtpassSecretKey: string;
 
   // Logging
   logLevel: 'error' | 'warn' | 'info' | 'debug';
@@ -197,11 +197,19 @@ async function resolveAwsSecrets(region: string, secretName: string): Promise<vo
  *   3. AWS Secrets Manager (JSON-parsed — \\n already decoded to real newlines)
  *   4. Single-line base64 with no newlines at all — body is re-chunked at 64 chars
  */
-function normalizePemKey(raw: string): string {
-  // Unescape literal \n sequences (produced by .env files and some CI systems)
+function normalizePemKey(raw: string, label = 'key'): string {
+  // Step 1: replace literal \n sequences (from .env files and some CI systems)
+  // In JS source \\n matches the two-char sequence backslash+n at runtime
   let pem = raw.replace(/\\n/g, '\n');
 
-  // If still no real newlines, the key is one continuous string — reconstruct it
+  // Step 2: replace spaces that appear between base64 chars on a single line
+  // (happens when PEM is copy-pasted from a terminal that wraps with spaces)
+  // Only do this when there are no real newlines yet
+  if (!pem.includes('\n')) {
+    pem = pem.replace(/ /g, '\n');
+  }
+
+  // Step 3: if still no real newlines, reconstruct from single-line base64 body
   if (!pem.includes('\n')) {
     const match = pem.match(/^(-----BEGIN [^-]+-----)([A-Za-z0-9+/=]+)(-----END [^-]+-----)$/);
     if (match) {
@@ -213,7 +221,21 @@ function normalizePemKey(raw: string): string {
     }
   }
 
-  return pem.trim() + '\n';
+  const result = pem.trim() + '\n';
+
+  // Startup diagnostic — logs key shape without exposing content
+  // Skipped in test environment to keep Jest output clean
+  if (process.env['NODE_ENV'] !== 'test') {
+    const lines = result.split('\n').filter(Boolean);
+    const header = lines[0] ?? '(empty)';
+    const footer = lines[lines.length - 1] ?? '(empty)';
+    const bodyLen = lines.slice(1, -1).join('').length;
+    console.warn(
+      `[Config] PEM ${label}: header="${header}" footer="${footer}" body_chars=${bodyLen} total_lines=${lines.length}`,
+    );
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,9 +263,9 @@ function buildConfig(): AppConfig {
     redisKeyPrefix: process.env['REDIS_KEY_PREFIX'] ?? 'fk:',
 
     // JWT
-    jwtPrivateKey: normalizePemKey(requireEnv('JWT_PRIVATE_KEY')),
-    jwtPublicKey: normalizePemKey(requireEnv('JWT_PUBLIC_KEY')),
-    jwtAccessTokenTtl: envInt('JWT_ACCESS_TOKEN_TTL', 900),
+    jwtPrivateKey: normalizePemKey(requireEnv('JWT_PRIVATE_KEY'), 'JWT_PRIVATE_KEY'),
+    jwtPublicKey: normalizePemKey(requireEnv('JWT_PUBLIC_KEY'), 'JWT_PUBLIC_KEY'),
+    jwtAccessTokenTtl: envInt('JWT_ACCESS_TOKEN_TTL', 900), // 15 min — client must proactively refresh using access_token_expires_at
     jwtRefreshTokenTtl: envInt('JWT_REFRESH_TOKEN_TTL', 2592000),
     jwtIssuer: process.env['JWT_ISSUER'] ?? 'flowkey-api',
     jwtAudience: process.env['JWT_AUDIENCE'] ?? 'flowkey-app',
@@ -289,17 +311,7 @@ function buildConfig(): AppConfig {
     premblyCircuitBreakerCooldownMs: envInt('PREMBLY_CIRCUIT_BREAKER_COOLDOWN_MS', 60000),
 
     // KYC — per-tier transfer limits (kobo)
-    // Tier 0: no transfers until BVN verified
-    // Tier 1 (BVN): ₦50k/day, ₦20k single
-    // Tier 2 (NIN+selfie): ₦500k/day, ₦200k single
-    // Tier 3 (address+docs): ₦5m/day, ₦2m single
-    kycTier0DailyLimit: BigInt(process.env['KYC_TIER0_DAILY_LIMIT'] ?? '0'),
-    kycTier1DailyLimit: BigInt(process.env['KYC_TIER1_DAILY_LIMIT'] ?? '5000000'),
-    kycTier2DailyLimit: BigInt(process.env['KYC_TIER2_DAILY_LIMIT'] ?? '50000000'),
-    kycTier3DailyLimit: BigInt(process.env['KYC_TIER3_DAILY_LIMIT'] ?? '500000000'),
-    kycTier1SingleLimit: BigInt(process.env['KYC_TIER1_SINGLE_LIMIT'] ?? '2000000'),
-    kycTier2SingleLimit: BigInt(process.env['KYC_TIER2_SINGLE_LIMIT'] ?? '20000000'),
-    kycTier3SingleLimit: BigInt(process.env['KYC_TIER3_SINGLE_LIMIT'] ?? '200000000'),
+
     kycCooldownTier1Hours: envInt('KYC_COOLDOWN_TIER1_HOURS', 24),
     kycCooldownTier2PlusHours: envInt('KYC_COOLDOWN_TIER2PLUS_HOURS', 48),
 
@@ -327,6 +339,11 @@ function buildConfig(): AppConfig {
     queueDefaultBackoffMs: envInt('QUEUE_DEFAULT_BACKOFF_MS', 5000),
 
     // Logging
+    // VTPass
+    vtpassApiKey: process.env['VTPASS_API_KEY'] ?? '',
+    vtpassPublicKey: process.env['VTPASS_PUBLIC_KEY'] ?? '',
+    vtpassSecretKey: process.env['VTPASS_SECRET_KEY'] ?? '',
+
     logLevel: (process.env['LOG_LEVEL'] ?? 'info') as AppConfig['logLevel'],
     logFormat: (process.env['LOG_FORMAT'] ?? 'json') as AppConfig['logFormat'],
   };
