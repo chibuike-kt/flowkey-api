@@ -10,11 +10,9 @@ import { prisma } from './common/utils/prisma';
 import { redis } from './common/utils/redis';
 import { notFoundHandler } from './common/middleware/notFound';
 
-// Phase 5 — Auth & Settings routers (active)
+
 import { authRouter } from './features/auth/auth.router';
 import { settingsRouter } from './features/settings/settings.router';
-
-// Future phase routers — uncommented as each phase completes
 import { kycRouter } from './features/kyc/kyc.router';
 import { walletRouter } from './features/wallet/wallet.router';
 import { transfersRouter } from './features/transfers/transfers.router';
@@ -23,12 +21,11 @@ import { depositsRouter } from './features/deposits/deposits.router';
 import { testDepositRouter } from './features/deposits/test-deposit.router'; // REMOVE FOR PRODUCTION
 import { cardsRouter } from './features/cards/cards.router';
 import { beneficiariesRouter } from './features/beneficiaries/beneficiaries.router';
+import { paymentRequestsRouter } from './features/payment-requests/payment-requests.router';
 import { flagsRouter } from './features/admin/flags.router';
 import { webhooksRouter } from './features/webhooks/webhooks.router';
-// import { transferRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
 // import { billRouter } from './features/bills/bills.router';
-// import { qrRouter } from './features/qr/qr.router';
 // import { botRouter } from './features/bot/bot.router';
 // import { notificationRouter } from './features/notifications/notifications.router';
 // import { receiptRouter } from './features/receipts/receipts.router';
@@ -155,6 +152,7 @@ export function createApp(): express.Application {
   }
   app.use(`${apiPrefix}/cards`, cardsRouter);
   app.use(`${apiPrefix}/beneficiaries`, beneficiariesRouter);
+  app.use(`${apiPrefix}/payment-requests`, paymentRequestsRouter);
 
   // Admin — internal only, protected by ADMIN_API_KEY header
   app.use('/admin/flags', flagsRouter);
