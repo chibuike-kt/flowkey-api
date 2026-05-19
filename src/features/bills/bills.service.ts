@@ -50,6 +50,35 @@ import type {
 const db = prisma as any;
 
 // ---------------------------------------------------------------------------
+// Safe VTPass response accessors — sandbox/live may vary shape
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function vtpassIsDelivered(r: any): boolean {
+  // code '000' AND status 'delivered' in content.transactions
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const code = String(r?.code ?? '');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const status = String(r?.content?.transactions?.status ?? '');
+  return code === '000' && (status === 'delivered' || status === 'successful' || status === '');
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function vtpassIsPending(r: any): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const code = String(r?.code ?? '');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const status = String(r?.content?.transactions?.status ?? '');
+  return code === '099' || status === 'pending';
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function vtpassOrderId(r: any): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  return (r?.content?.transactions?.transactionId as string | undefined) ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -369,10 +398,12 @@ export async function buyAirtime(userId: string, input: BuyAirtimeInput): Promis
     );
   }
 
-  const delivered =
-    vtpassResult.code === '000' && vtpassResult.content.transactions.status === 'delivered';
-  const pending =
-    vtpassResult.code === '099' || vtpassResult.content.transactions.status === 'pending';
+  logger.info('[VTPASS] Airtime raw response', {
+    code: vtpassResult.code,
+    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+  });
+  const delivered = vtpassIsDelivered(vtpassResult);
+  const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
 
   if (status === 'failed') {
@@ -384,7 +415,7 @@ export async function buyAirtime(userId: string, input: BuyAirtimeInput): Promis
     where: { id: bill.id },
     data: {
       status,
-      vtpass_order_id: vtpassResult.content.transactions.transactionId,
+      vtpass_order_id: vtpassOrderId(vtpassResult),
       completed_at: delivered ? new Date() : null,
     },
   });
@@ -490,8 +521,12 @@ export async function buyData(userId: string, input: BuyDataInput): Promise<Bill
     );
   }
 
-  const delivered = vtpassResult.code === '000';
-  const pending = vtpassResult.code === '099';
+  logger.info('[VTPASS] Data raw response', {
+    code: vtpassResult.code,
+    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+  });
+  const delivered = vtpassIsDelivered(vtpassResult);
+  const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
 
   if (status === 'failed') await refundWallet(walletId, amountKobo, bill.id, reference);
@@ -501,7 +536,7 @@ export async function buyData(userId: string, input: BuyDataInput): Promise<Bill
     where: { id: bill.id },
     data: {
       status,
-      vtpass_order_id: vtpassResult.content.transactions.transactionId,
+      vtpass_order_id: vtpassOrderId(vtpassResult),
       completed_at: delivered ? new Date() : null,
     },
   });
@@ -599,8 +634,12 @@ export async function payTv(userId: string, input: PayTvInput): Promise<BillReco
     );
   }
 
-  const delivered = vtpassResult.code === '000';
-  const pending = vtpassResult.code === '099';
+  logger.info('[VTPASS] TV raw response', {
+    code: vtpassResult.code,
+    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+  });
+  const delivered = vtpassIsDelivered(vtpassResult);
+  const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
 
   if (status === 'failed') await refundWallet(walletId, amountKobo, bill.id, reference);
@@ -610,7 +649,7 @@ export async function payTv(userId: string, input: PayTvInput): Promise<BillReco
     where: { id: bill.id },
     data: {
       status,
-      vtpass_order_id: vtpassResult.content.transactions.transactionId,
+      vtpass_order_id: vtpassOrderId(vtpassResult),
       completed_at: delivered ? new Date() : null,
     },
   });
@@ -712,8 +751,12 @@ export async function payElectricity(
     );
   }
 
-  const delivered = vtpassResult.code === '000';
-  const pending = vtpassResult.code === '099';
+  logger.info('[VTPASS] Electricity raw response', {
+    code: vtpassResult.code,
+    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+  });
+  const delivered = vtpassIsDelivered(vtpassResult);
+  const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
 
   if (status === 'failed') await refundWallet(walletId, amountKobo, bill.id, reference);
@@ -723,7 +766,7 @@ export async function payElectricity(
     where: { id: bill.id },
     data: {
       status,
-      vtpass_order_id: vtpassResult.content.transactions.transactionId,
+      vtpass_order_id: vtpassOrderId(vtpassResult),
       purchased_code: vtpassResult.purchased_code ?? vtpassResult.token ?? null,
       units: vtpassResult.units ?? null,
       completed_at: delivered ? new Date() : null,
@@ -820,8 +863,12 @@ export async function payEducation(userId: string, input: PayEducationInput): Pr
     );
   }
 
-  const delivered = vtpassResult.code === '000';
-  const pending = vtpassResult.code === '099';
+  logger.info('[VTPASS] Education raw response', {
+    code: vtpassResult.code,
+    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+  });
+  const delivered = vtpassIsDelivered(vtpassResult);
+  const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
 
   if (status === 'failed') await refundWallet(walletId, amountKobo, bill.id, reference);
@@ -831,7 +878,7 @@ export async function payEducation(userId: string, input: PayEducationInput): Pr
     where: { id: bill.id },
     data: {
       status,
-      vtpass_order_id: vtpassResult.content.transactions.transactionId,
+      vtpass_order_id: vtpassOrderId(vtpassResult),
       purchased_code: vtpassResult.purchased_code ?? null,
       completed_at: delivered ? new Date() : null,
     },
