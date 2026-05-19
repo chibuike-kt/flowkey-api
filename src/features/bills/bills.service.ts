@@ -398,10 +398,7 @@ export async function buyAirtime(userId: string, input: BuyAirtimeInput): Promis
     );
   }
 
-  logger.info('[VTPASS] Airtime raw response', {
-    code: vtpassResult.code,
-    content: JSON.stringify(vtpassResult.content).slice(0, 500),
-  });
+  logger.info('[VTPASS] Airtime raw response', { raw: JSON.stringify(vtpassResult).slice(0, 800) });
   const delivered = vtpassIsDelivered(vtpassResult);
   const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
@@ -521,10 +518,7 @@ export async function buyData(userId: string, input: BuyDataInput): Promise<Bill
     );
   }
 
-  logger.info('[VTPASS] Data raw response', {
-    code: vtpassResult.code,
-    content: JSON.stringify(vtpassResult.content).slice(0, 500),
-  });
+  logger.info('[VTPASS] Data raw response', { raw: JSON.stringify(vtpassResult).slice(0, 800) });
   const delivered = vtpassIsDelivered(vtpassResult);
   const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
@@ -634,10 +628,7 @@ export async function payTv(userId: string, input: PayTvInput): Promise<BillReco
     );
   }
 
-  logger.info('[VTPASS] TV raw response', {
-    code: vtpassResult.code,
-    content: JSON.stringify(vtpassResult.content).slice(0, 500),
-  });
+  logger.info('[VTPASS] TV raw response', { raw: JSON.stringify(vtpassResult).slice(0, 800) });
   const delivered = vtpassIsDelivered(vtpassResult);
   const pending = vtpassIsPending(vtpassResult);
   const status = delivered ? 'delivered' : pending ? 'pending' : 'failed';
@@ -752,8 +743,7 @@ export async function payElectricity(
   }
 
   logger.info('[VTPASS] Electricity raw response', {
-    code: vtpassResult.code,
-    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+    raw: JSON.stringify(vtpassResult).slice(0, 800),
   });
   const delivered = vtpassIsDelivered(vtpassResult);
   const pending = vtpassIsPending(vtpassResult);
@@ -864,8 +854,7 @@ export async function payEducation(userId: string, input: PayEducationInput): Pr
   }
 
   logger.info('[VTPASS] Education raw response', {
-    code: vtpassResult.code,
-    content: JSON.stringify(vtpassResult.content).slice(0, 500),
+    raw: JSON.stringify(vtpassResult).slice(0, 800),
   });
   const delivered = vtpassIsDelivered(vtpassResult);
   const pending = vtpassIsPending(vtpassResult);
