@@ -1,3 +1,25 @@
+/**
+ * FlowKey — VTPass Provider
+ *
+ * All VTPass HTTP calls go through here.
+ * Each call type has its own circuit breaker.
+ *
+ * Auth:
+ *   GET  requests: api-key + public-key headers
+ *   POST requests: api-key + secret-key headers
+ *
+ * Endpoints:
+ *   GET  /api/service-variations   — list plans for a service
+ *   POST /api/merchant-verify      — verify smartcard / meter number
+ *   POST /api/pay                  — purchase a service
+ *   POST /api/requery              — query transaction status
+ *
+ * Request ID format (VTPass requirement):
+ *   First 12 chars: YYYYMMDDHHII (Lagos time, GMT+1)
+ *   Followed by any alphanumeric suffix
+ *   Minimum 12 chars total
+ */
+
 import { config } from '../../config';
 import { logger } from '../../common/utils/logger';
 import { createBreaker, fire } from '../../common/resilience/circuit-breaker';
@@ -6,8 +28,26 @@ import type { VtpassResponse, VtpassVerifyResponse, VtpassVariation } from './bi
 const LIVE_BASE = 'https://vtpass.com/api';
 const SANDBOX_BASE = 'https://sandbox.vtpass.com/api';
 
+/**
+ * Whether to call the real VTPass API (live or sandbox).
+ * Controlled by VTPASS_LIVE env var:
+ *   - Not set or 'false' → use FlowKey stubs (no network call to VTPass)
+ *   - 'sandbox'          → call VTPass sandbox (sandbox.vtpass.com) — no real money
+ *   - 'true' or 'live'  → call VTPass live (vtpass.com) — real money, production only
+ */
+function vtpassMode(): 'stub' | 'sandbox' | 'live' {
+  const mode = (process.env['VTPASS_LIVE'] ?? '').toLowerCase();
+  if (mode === 'live' || mode === 'true') return 'live';
+  if (mode === 'sandbox') return 'sandbox';
+  return 'stub';
+}
+
 function baseUrl(): string {
-  return config().isProduction ? LIVE_BASE : SANDBOX_BASE;
+  return vtpassMode() === 'live' ? LIVE_BASE : SANDBOX_BASE;
+}
+
+function useStub(): boolean {
+  return vtpassMode() === 'stub';
 }
 
 function getHeaders(): Record<string, string> {
@@ -75,7 +115,7 @@ const _requeryBreaker = createBreaker(async (requestId: string) => _callRequery(
 // ---------------------------------------------------------------------------
 
 export async function getVariations(serviceId: string): Promise<VtpassVariation[]> {
-  if (!config().isProduction) return _stubVariations(serviceId);
+  if (useStub()) return _stubVariations(serviceId);
   return fire(_variationsBreaker, serviceId);
 }
 
@@ -84,7 +124,7 @@ export async function verifyCustomer(payload: {
   billersCode: string;
   type?: string;
 }): Promise<VtpassVerifyResponse> {
-  if (!config().isProduction) return _stubVerify(payload);
+  if (useStub()) return _stubVerify(payload);
   return fire(_verifyBreaker, payload as Record<string, string>);
 }
 
@@ -97,12 +137,12 @@ export async function purchaseService(payload: {
   billersCode?: string;
   quantity?: number;
 }): Promise<VtpassResponse> {
-  if (!config().isProduction) return _stubPurchase(payload);
+  if (useStub()) return _stubPurchase(payload);
   return fire(_payBreaker, payload as Record<string, unknown>);
 }
 
 export async function requeryTransaction(requestId: string): Promise<VtpassResponse> {
-  if (!config().isProduction) return _stubRequery(requestId);
+  if (useStub()) return _stubRequery(requestId);
   return fire(_requeryBreaker, requestId);
 }
 
