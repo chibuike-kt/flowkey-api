@@ -47,6 +47,15 @@ CREATE INDEX "bill_transactions_status_idx"     ON "bill_transactions"("status")
 CREATE INDEX "bill_transactions_category_idx"   ON "bill_transactions"("category");
 CREATE INDEX "bill_transactions_created_at_idx" ON "bill_transactions"("created_at" DESC);
 
--- Allow ledger_entries to reference bill_transactions
--- bill_id is nullable — only set for bill debits/refunds
+-- Alter ledger_entries for bill support
+-- Make transaction_id nullable (bill entries have no transaction_id)
+ALTER TABLE "ledger_entries" ALTER COLUMN "transaction_id" DROP NOT NULL;
+
+-- Add bill_id (nullable FK to bill_transactions)
 ALTER TABLE "ledger_entries" ADD COLUMN IF NOT EXISTS "bill_id" UUID REFERENCES "bill_transactions"("id");
+
+-- Add reference column for bill debit/refund tracing
+ALTER TABLE "ledger_entries" ADD COLUMN IF NOT EXISTS "reference" VARCHAR(100);
+
+-- Index for bill lookups
+CREATE INDEX IF NOT EXISTS "ledger_entries_bill_id_idx" ON "ledger_entries"("bill_id");

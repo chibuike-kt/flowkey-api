@@ -275,31 +275,32 @@ model Wallet {
   created_at DateTime  @default(now()) @db.Timestamptz
   updated_at DateTime  @updatedAt @db.Timestamptz
 
-  user           User          @relation(fields: [user_id], references: [id])
-  ledger_entries LedgerEntry[]
+  user              User              @relation(fields: [user_id], references: [id])
+  ledger_entries    LedgerEntry[]
+  bill_transactions BillTransaction[]
 
   @@index([user_id])
   @@map("wallets")
 }
 
 model LedgerEntry {
-  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  wallet_id      String          @db.Uuid
-  transaction_id String          @db.Uuid
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  wallet_id      String           @db.Uuid
+  transaction_id String?          @db.Uuid
+  bill_id        String?          @db.Uuid
   type           LedgerEntryType
   amount         BigInt
-  created_at     DateTime        @default(now()) @db.Timestamptz
+  reference      String?          @db.VarChar(100)
+  created_at     DateTime         @default(now()) @db.Timestamptz
 
-  wallet      Wallet      @relation(fields: [wallet_id], references: [id])
-  transaction Transaction @relation(fields: [transaction_id], references: [id])
+  wallet      Wallet           @relation(fields: [wallet_id], references: [id])
+  transaction Transaction?     @relation(fields: [transaction_id], references: [id])
+  bill        BillTransaction? @relation(fields: [bill_id], references: [id])
 
   @@index([wallet_id])
   @@index([transaction_id])
   @@index([wallet_id, type])
   @@index([created_at])
-  bill_id        String?          @db.Uuid
-  bill           BillTransaction? @relation(fields: [bill_id], references: [id])
-
   @@map("ledger_entries")
 }
 
