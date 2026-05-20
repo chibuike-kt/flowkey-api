@@ -6,13 +6,6 @@ import type { VtpassResponse, VtpassVerifyResponse, VtpassVariation } from './bi
 const LIVE_BASE = 'https://vtpass.com/api';
 const SANDBOX_BASE = 'https://sandbox.vtpass.com/api';
 
-/**
- * Whether to call the real VTPass API (live or sandbox).
- * Controlled by VTPASS_LIVE env var:
- *   - Not set or 'false' → use FlowKey stubs (no network call to VTPass)
- *   - 'sandbox'          → call VTPass sandbox (sandbox.vtpass.com) — no real money
- *   - 'true' or 'live'  → call VTPass live (vtpass.com) — real money, production only
- */
 function vtpassMode(): 'stub' | 'sandbox' | 'live' {
   const mode = (process.env['VTPASS_LIVE'] ?? '').toLowerCase();
   if (mode === 'live' || mode === 'true') return 'live';
@@ -148,37 +141,14 @@ async function _callVerify(payload: Record<string, string>): Promise<VtpassVerif
 }
 
 async function _callPay(payload: Record<string, unknown>): Promise<VtpassResponse> {
-  const cfg = config();
-  const headers = postHeaders();
-  const url = `${baseUrl()}/pay`;
-
-  // Debug log — remove after confirming credentials work
-  console.log('[VTPASS DEBUG] POST', url);
-  console.log(
-    '[VTPASS DEBUG] api-key present:',
-    !!cfg.vtpassApiKey,
-    '| length:',
-    cfg.vtpassApiKey.length,
-  );
-  console.log(
-    '[VTPASS DEBUG] secret-key present:',
-    !!cfg.vtpassSecretKey,
-    '| starts with:',
-    cfg.vtpassSecretKey.slice(0, 5),
-  );
-  console.log('[VTPASS DEBUG] mode:', vtpassMode());
-  console.log('[VTPASS DEBUG] payload:', JSON.stringify({ ...payload, phone: '****' }));
-
-  const res = await fetch(url, {
+  const res = await fetch(`${baseUrl()}/pay`, {
     method: 'POST',
-    headers,
+    headers: postHeaders(),
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(55_000),
   });
 
   const text = await res.text();
-  console.log('[VTPASS DEBUG] raw response:', text.slice(0, 500));
-
   try {
     return JSON.parse(text) as VtpassResponse;
   } catch {
