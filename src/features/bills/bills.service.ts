@@ -177,7 +177,7 @@ async function enqueueReconcile(
     {
       delay: delayMs,
       attempts: 1,
-      jobId: `reconcile:${billId}:attempt:${attempt}`,
+      jobId: `reconcile_${billId}_attempt_${attempt}`,
     },
   );
   logger.info('bill_reconcile_enqueued', { bill_id: billId, attempt, delay_ms: delayMs });
