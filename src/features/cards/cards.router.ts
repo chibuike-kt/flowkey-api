@@ -10,4 +10,3 @@ router.get('/', handleListCards);
 router.delete('/:id', handleRemoveCard);
 
 export { router as cardsRouter };
-

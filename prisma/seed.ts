@@ -1,14 +1,3 @@
-/**
- * FlowKey — Database Seed
- * Development only. Never runs in production.
- *
- * Seeds:
- *   - 1 super_admin
- *   - 1 admin
- *   - 1 regular user (Tier 0, active, with wallet)
- *   - Genesis audit log entry
- */
-
 import * as dotenv from 'dotenv';
 dotenv.config();
 

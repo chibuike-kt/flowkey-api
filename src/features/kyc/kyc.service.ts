@@ -41,9 +41,9 @@ export async function getKycStatus(userId: string): Promise<KycStatusResult> {
     select: { kyc_tier: true },
   });
 
-  // Normalise: DB default was 0 before migration — treat 0 as tier 1
+  // Normalise: DB default was 0 before migration â€” treat 0 as tier 1
   const rawTier = (user as { kyc_tier: number }).kyc_tier;
-  const tier    = (rawTier < 1 ? 1 : rawTier) as KycTier;
+  const tier = (rawTier < 1 ? 1 : rawTier) as KycTier;
 
   // Most recent attempt (any tier)
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
@@ -112,7 +112,7 @@ export async function upgradeKyc(
   });
   // Normalise: treat tier 0 as tier 1 (pre-migration safety)
   const rawCurrentTier = (user as { kyc_tier: number }).kyc_tier;
-  const currentTier    = (rawCurrentTier < 1 ? 1 : rawCurrentTier) as KycTier;
+  const currentTier = (rawCurrentTier < 1 ? 1 : rawCurrentTier) as KycTier;
   const targetTier = payload.target_tier;
 
   // 2. Sequential upgrade check

@@ -25,8 +25,10 @@ import { paymentRequestsRouter } from './features/payment-requests/payment-reque
 import { billsRouter } from './features/bills/bills.router';
 import { flagsRouter } from './features/admin/flags.router';
 import { webhooksRouter } from './features/webhooks/webhooks.router';
+// import { transferRouter } from './features/transfers/transfers.router';
 // import { withdrawalRouter } from './features/withdrawals/withdrawals.router';
 // import { billRouter } from './features/bills/bills.router';
+// import { qrRouter } from './features/qr/qr.router';
 // import { botRouter } from './features/bot/bot.router';
 // import { notificationRouter } from './features/notifications/notifications.router';
 // import { receiptRouter } from './features/receipts/receipts.router';
@@ -147,7 +149,7 @@ export function createApp(): express.Application {
   app.use(`${apiPrefix}/transfers`, transfersRouter);
   app.use(`${apiPrefix}/qr`, qrRouter);
   app.use(`${apiPrefix}/deposits`, depositsRouter);
-  // REMOVE FOR PRODUCTION — test funding endpoint
+  // ⚠️ REMOVE FOR PRODUCTION — test funding endpoint
   if (process.env['NODE_ENV'] !== 'production') {
     app.use(`${apiPrefix}/test/deposit`, testDepositRouter);
   }

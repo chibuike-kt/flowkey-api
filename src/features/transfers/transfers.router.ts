@@ -1,7 +1,3 @@
-/**
- * FlowKey — Transfers Router
- */
-
 import { Router } from 'express';
 import { requireAuth } from '../../common/middleware/requireAuth';
 import { idempotencyCheck } from '../../common/middleware/idempotency';

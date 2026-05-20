@@ -1,19 +1,3 @@
-/**
- * FlowKey — Auth Middleware
- *
- * requireAuth:
- *   Verifies the Bearer JWT on every protected request.
- *   Sets req.user with the decoded payload.
- *   Checks the session blocklist in Redis (for revoked sessions
- *   within the 15-minute access token window).
- *
- * requireAdmin:
- *   Same as requireAuth but verifies the role claim is admin or super_admin.
- *
- * requireSuperAdmin:
- *   Same as requireAdmin but enforces super_admin role specifically.
- */
-
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, verifyAdminAccessToken } from '../../features/auth/token.service';
 import { isSessionBlocklisted } from '../../features/auth/session.service';

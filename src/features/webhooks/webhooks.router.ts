@@ -25,5 +25,3 @@ router.post('/paystack', async (req: Request, res: Response) => {
 });
 
 export { router as webhooksRouter };
-
-

@@ -1,16 +1,3 @@
-/**
- * FlowKey — Email Queue Helpers
- *
- * All callers use these functions — never import emailQueue directly.
- * Each helper:
- *   - Wraps queue.add in try/catch — never crashes the API
- *   - In dev: logs fallback and continues
- *   - In production: throws AppError(EXTERNAL_SERVICE_ERROR)
- *   - Uses timestamp suffix on OTP jobIds to avoid legitimate deduplication
- *
- * BullMQ constraint: jobIds cannot contain ":". All dedup_keys use "-" as separator.
- */
-
 import { emailQueue } from './index';
 import { logger } from '../common/utils/logger';
 import { AppError, ErrorCode } from '../common/errors/AppError';

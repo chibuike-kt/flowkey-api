@@ -1,25 +1,3 @@
-/**
- * FlowKey — VTPass Provider
- *
- * All VTPass HTTP calls go through here.
- * Each call type has its own circuit breaker.
- *
- * Auth:
- *   GET  requests: api-key + public-key headers
- *   POST requests: api-key + secret-key headers
- *
- * Endpoints:
- *   GET  /api/service-variations   — list plans for a service
- *   POST /api/merchant-verify      — verify smartcard / meter number
- *   POST /api/pay                  — purchase a service
- *   POST /api/requery              — query transaction status
- *
- * Request ID format (VTPass requirement):
- *   First 12 chars: YYYYMMDDHHII (Lagos time, GMT+1)
- *   Followed by any alphanumeric suffix
- *   Minimum 12 chars total
- */
-
 import { config } from '../../config';
 import { logger } from '../../common/utils/logger';
 import { createBreaker, fire } from '../../common/resilience/circuit-breaker';

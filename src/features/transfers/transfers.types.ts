@@ -1,7 +1,3 @@
-/**
- * FlowKey — Transfers Feature Types
- */
-
 export type TransferSource = 'username' | 'qr_code' | 'universal_id' | 'api';
 
 export type PaymentMethod =

@@ -1,12 +1,3 @@
-/**
- * Phase 4 — OpenAPI spec validation tests
- *
- * Validates the docs/openapi.json spec against what's actually
- * implemented in FlowKey. Tests are scoped to what the spec contains
- * rather than asserting a fixed endpoint count — the spec grows
- * as phases are completed.
- */
-
 import * as fs from 'fs';
 import * as path from 'path';
 

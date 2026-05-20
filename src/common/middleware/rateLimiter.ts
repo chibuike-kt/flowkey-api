@@ -1,13 +1,3 @@
-/**
- * FlowKey — Rate Limiter Middleware
- *
- * Redis-backed sliding window rate limiters.
- * Applied per-endpoint with endpoint-specific limits.
- *
- * All limits are per-IP AND per-user (where authenticated).
- * Auth endpoints get stricter limits.
- */
-
 import { RateLimiterRedis } from 'rate-limiter-flexible';
 import type { Request, Response, NextFunction } from 'express';
 import { redis } from '../utils/redis';

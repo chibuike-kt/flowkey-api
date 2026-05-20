@@ -1,10 +1,3 @@
-/**
- * FlowKey — Job Type Definitions
- *
- * Shared job payload types across all queues.
- * Every job has a deduplication key to prevent duplicate delivery.
- */
-
 // ---------------------------------------------------------------------------
 // Email jobs
 // ---------------------------------------------------------------------------
@@ -130,4 +123,16 @@ export interface AutoReverseBankTransferJobData {
   amountKobo: string;
   reference: string;
   failureReason: string;
+}
+
+// ---------------------------------------------------------------------------
+// Bill reconciliation jobs
+// ---------------------------------------------------------------------------
+
+export interface BillReconcileJobData {
+  billId: string;
+  walletId: string;
+  amountKobo: string; // BigInt serialised as string
+  reference: string;
+  attemptNumber: number; // 1-indexed, max 6
 }

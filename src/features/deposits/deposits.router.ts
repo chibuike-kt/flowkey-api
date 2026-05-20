@@ -12,7 +12,11 @@ import {
 const router = Router();
 router.use(requireAuth);
 
-router.post('/virtual-account', handleProvisionVirtualAccount);
+router.post(
+  '/virtual-account',
+  requireFlag('deposits.virtual_account'),
+  handleProvisionVirtualAccount,
+);
 router.get('/virtual-account', handleGetVirtualAccount);
 router.get('/', handleListDeposits);
 router.post('/card', requireFlag('deposits.card'), idempotencyCheck, handleCardDeposit);

@@ -1,7 +1,3 @@
-/**
- * Phase 5 — Auth Zod schema tests
- */
-
 import {
   InitiateRegistrationSchema,
   VerifyOtpSchema,

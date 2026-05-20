@@ -387,11 +387,6 @@ export function config(): AppConfig {
   }
   return _config;
 }
-
-/**
- * Reset config singleton — test use only.
- * Allows each test suite to reinitialise with different env values.
- */
 export function _resetConfigForTesting(): void {
   _config = null;
 }

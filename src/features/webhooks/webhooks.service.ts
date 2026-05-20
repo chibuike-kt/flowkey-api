@@ -6,30 +6,8 @@ import { creditWallet } from '../deposits/deposits.service';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
-const PROVIDUS_SECRET = process.env['PROVIDUS_WEBHOOK_SECRET'] ?? 'providus-dev-secret';
-const PAYSTACK_SECRET = process.env['PAYSTACK_SECRET_KEY'] ?? 'paystack-dev-secret';
-
-// ---------------------------------------------------------------------------
-// HMAC verification helpers
-// ---------------------------------------------------------------------------
-
-export function verifyProvidusSignature(rawBody: string, signature: string): boolean {
-  const expected = crypto.createHmac('sha512', PROVIDUS_SECRET).update(rawBody).digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
-  } catch {
-    return false;
-  }
-}
-
-export function verifyPaystackSignature(rawBody: string, signature: string): boolean {
-  const expected = crypto.createHmac('sha512', PAYSTACK_SECRET).update(rawBody).digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
-  } catch {
-    return false;
-  }
-}
+export { verifyProvidusSignature, verifyPaystackSignature } from './webhooks.crypto';
+import { verifyProvidusSignature, verifyPaystackSignature } from './webhooks.crypto';
 
 // ---------------------------------------------------------------------------
 // Idempotency guard — record webhook, return true if already processed

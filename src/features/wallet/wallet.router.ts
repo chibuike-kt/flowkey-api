@@ -1,7 +1,3 @@
-/**
- * FlowKey — Wallet Router
- */
-
 import { Router } from 'express';
 import { requireAuth } from '../../common/middleware/requireAuth';
 import {

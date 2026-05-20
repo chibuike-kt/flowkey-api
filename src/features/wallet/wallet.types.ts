@@ -1,7 +1,3 @@
-/**
- * FlowKey — Wallet Feature Types
- */
-
 export interface WalletBalance {
   wallet_id: string;
   balance_kobo: string;

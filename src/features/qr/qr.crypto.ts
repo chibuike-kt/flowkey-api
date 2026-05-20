@@ -30,4 +30,3 @@ export function decodePayloadString(encoded: string): QrPayload {
     throw new AppError(ErrorCode.VALIDATION_ERROR, 'Invalid QR payload encoding.');
   }
 }
-

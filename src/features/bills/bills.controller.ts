@@ -32,6 +32,10 @@ function uid(req: Request): string {
   return req.user!.sub as string;
 }
 
+function ikey(req: Request): string | undefined {
+  return req.headers['idempotency-key'] as string | undefined;
+}
+
 function validate<T>(
   schema: {
     safeParse: (d: unknown) => {
@@ -43,11 +47,12 @@ function validate<T>(
   data: unknown,
 ): T {
   const r = schema.safeParse(data);
-  if (!r.success)
+  if (!r.success) {
     throw new AppError(
       ErrorCode.VALIDATION_ERROR,
       r.error!.issues.map((e) => e.message).join('; '),
     );
+  }
   return r.data!;
 }
 
@@ -62,7 +67,7 @@ export async function handleBuyAirtime(
 ): Promise<void> {
   try {
     const input = validate(BuyAirtimeSchema, req.body);
-    const result = await buyAirtime(uid(req), input);
+    const result = await buyAirtime(uid(req), input, ikey(req));
     res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
@@ -94,7 +99,7 @@ export async function handleBuyData(
 ): Promise<void> {
   try {
     const input = validate(BuyDataSchema, req.body);
-    const result = await buyData(uid(req), input);
+    const result = await buyData(uid(req), input, ikey(req));
     res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
@@ -136,7 +141,7 @@ export async function handleVerifySmartcard(
 export async function handlePayTv(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const input = validate(PayTvSchema, req.body);
-    const result = await payTv(uid(req), input);
+    const result = await payTv(uid(req), input, ikey(req));
     res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
@@ -180,7 +185,7 @@ export async function handlePayElectricity(
 ): Promise<void> {
   try {
     const input = validate(PayElectricitySchema, req.body);
-    const result = await payElectricity(uid(req), input);
+    const result = await payElectricity(uid(req), input, ikey(req));
     res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);
@@ -198,7 +203,7 @@ export async function handlePayEducation(
 ): Promise<void> {
   try {
     const input = validate(PayEducationSchema, req.body);
-    const result = await payEducation(uid(req), input);
+    const result = await payEducation(uid(req), input, ikey(req));
     res.status(201).json({ success: true, data: result, meta: null, error: null });
   } catch (err) {
     next(err);

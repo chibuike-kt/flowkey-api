@@ -37,8 +37,30 @@ function getStore(): Record<string, string> {
 }
 
 beforeEach(() => {
+  // Clear store
   const store = getStore();
   Object.keys(store).forEach((k) => delete store[k]);
+
+  // Re-apply mock implementations after jest clearMocks/resetMocks wipes them
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { redis } = require('../../../src/common/utils/redis') as {
+    redis: Record<string, jest.Mock>;
+  };
+  redis['get'].mockImplementation((k: string) => Promise.resolve(getStore()[k] ?? null));
+  redis['set'].mockImplementation((k: string, v: string) => {
+    getStore()[k] = v;
+    return Promise.resolve('OK');
+  });
+  redis['setex'].mockImplementation((k: string, _t: number, v: string) => {
+    getStore()[k] = v;
+    return Promise.resolve('OK');
+  });
+  redis['del'].mockImplementation((...keys: string[]) => {
+    const store = getStore();
+    const flat = keys.flat() as string[];
+    flat.forEach((k: string) => delete store[k]);
+    return Promise.resolve(flat.length);
+  });
 });
 
 const unlockedDb = async () => ({ hard_locked: false, locked_until: null });

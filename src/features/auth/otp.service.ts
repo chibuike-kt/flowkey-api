@@ -5,9 +5,9 @@ import { config } from '../../config';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import type { OtpType } from './auth.types';
 
-
+// ---------------------------------------------------------------------------
 // Key helpers
-
+// ---------------------------------------------------------------------------
 
 function otpKey(userId: string, type: OtpType): string {
   return `otp:${userId}:${type}`;
@@ -21,14 +21,27 @@ function resendKey(userId: string, type: OtpType): string {
   return `otp:${userId}:${type}:resend`;
 }
 
-
+// ---------------------------------------------------------------------------
 // OTP generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a cryptographically random 6-digit OTP.
+ * Using randomInt (CSPRNG) — never Math.random().
+ */
 function generateOtpValue(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
-
+// ---------------------------------------------------------------------------
 // Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate and store a new OTP for the given user and type.
+ * If an OTP already exists, it is overwritten (invalidated immediately).
+ * Returns the OTP value — caller is responsible for sending it.
+ */
 export async function generateOtp(userId: string, type: OtpType): Promise<string> {
   const cfg = config();
   const otp = generateOtpValue();
@@ -156,5 +169,3 @@ export async function getOtpTtl(userId: string, type: OtpType): Promise<number> 
   const ttl = await redis.ttl(key);
   return ttl > 0 ? ttl : 0;
 }
-
-

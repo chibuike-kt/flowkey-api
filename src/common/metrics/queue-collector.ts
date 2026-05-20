@@ -59,5 +59,3 @@ export function stopQueueCollector(): void {
     _interval = null;
   }
 }
-
-

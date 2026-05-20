@@ -1,23 +1,7 @@
-/**
- * FlowKey — Worker Process Entry Point
- *
- * This file boots all workers as a SEPARATE PROCESS from the API.
- * Never import this file from the API process.
- *
- * Start workers:
- *   Development:  npx tsx src/workers/index.ts
- *   Production:   node dist/workers/index.js
- *
- * The API process can run without this — jobs queue up in Redis
- * and are processed when the worker comes online.
- *
- * Graceful shutdown: listens for SIGTERM/SIGINT, drains active jobs,
- * then exits cleanly.
- */
-
 import { createEmailWorker } from './email.worker';
 import { createSmsWorker } from './sms.worker';
 import { createPushWorker } from './push.worker';
+import { createBillReconcileWorker } from './bill-reconcile.worker';
 import { logger } from '../common/utils/logger';
 import { redis } from '../common/utils/redis';
 import { initConfig } from '../config';
@@ -43,9 +27,10 @@ async function main(): Promise<void> {
   const emailWorker = createEmailWorker();
   const smsWorker = createSmsWorker();
   const pushWorker = createPushWorker();
+  const billReconcileWorker = createBillReconcileWorker();
 
   logger.info('All workers started', {
-    workers: ['email-queue', 'sms-queue', 'push-queue'],
+    workers: ['email-queue', 'sms-queue', 'push-queue', 'bill-reconcile'],
   });
 
   // ---------------------------------------------------------------------------
@@ -56,7 +41,12 @@ async function main(): Promise<void> {
     logger.info(`Worker process: received ${signal} — shutting down gracefully`);
 
     // Close workers — waits for active jobs to finish before stopping
-    await Promise.allSettled([emailWorker.close(), smsWorker.close(), pushWorker.close()]);
+    await Promise.allSettled([
+      emailWorker.close(),
+      smsWorker.close(),
+      pushWorker.close(),
+      billReconcileWorker.close(),
+    ]);
 
     // Close Redis connection
     await redis.quit();

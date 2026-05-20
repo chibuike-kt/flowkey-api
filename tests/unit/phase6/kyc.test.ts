@@ -1,7 +1,3 @@
-/**
- * Phase 6 — KYC tests
- */
-
 import { TIER_LIMITS } from '../../../src/features/kyc/kyc.types';
 import { UpgradeKycSchema } from '../../../src/features/kyc/kyc.schema';
 

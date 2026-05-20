@@ -1,10 +1,3 @@
-/**
- * Phase 7 — Wallet tests
- *
- * Pure logic: balance computation, direction derivation,
- * type contracts, pagination. No DB or Redis.
- */
-
 import type {
   WalletBalance,
   TransactionListItem,

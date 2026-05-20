@@ -1,14 +1,3 @@
-/**
- * FlowKey — Wallet Service
- *
- * Balance is derived entirely from ledger_entries — no balance column.
- * Transaction history covers ALL transaction types:
- *   funding (deposits), transfer_internal, transfer_bank, reversal
- *
- * Each item includes human-readable labels, counterparty display names,
- * payment method, and direction (credit/debit) relative to the user's wallet.
- */
-
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { prisma } from '../../common/utils/prisma';
 import type {

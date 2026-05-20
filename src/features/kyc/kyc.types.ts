@@ -1,5 +1,9 @@
 export type KycTier = 1 | 2 | 3;
 
+// ---------------------------------------------------------------------------
+// Per-channel daily limits for a tier
+// Stored as strings to avoid BigInt JSON serialisation issues
+// ---------------------------------------------------------------------------
 export interface TierLimits {
   flowkey_to_flowkey_kobo: string;
   flowkey_to_bank_kobo: string;
@@ -28,6 +32,10 @@ export const TIER_LIMITS: Record<KycTier, TierLimits> = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Service types
+// ---------------------------------------------------------------------------
+
 export interface KycStatusResult {
   current_tier: KycTier;
   limits: TierLimits;
@@ -45,6 +53,10 @@ export interface KycAttemptSummary {
   updated_at: Date;
 }
 
+// ---------------------------------------------------------------------------
+// Request payloads
+// ---------------------------------------------------------------------------
+
 export interface UpgradeToTier2Payload {
   bvn: string;
   nin: string;
@@ -58,6 +70,10 @@ export interface UpgradeToTier3Payload {
 export type UpgradeKycPayload =
   | ({ target_tier: 2 } & UpgradeToTier2Payload)
   | ({ target_tier: 3 } & UpgradeToTier3Payload);
+
+// ---------------------------------------------------------------------------
+// Prembly provider
+// ---------------------------------------------------------------------------
 
 export interface PremblyResult {
   success: boolean; // provider call succeeded (network + response)

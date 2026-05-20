@@ -136,7 +136,17 @@ export const PayEducationSchema = z.object({
 
 export const ListBillsSchema = z.object({
   category: z.enum(['airtime', 'data', 'tv', 'electricity', 'education', 'all']).default('all'),
-  status: z.enum(['pending', 'processing', 'delivered', 'failed', 'refunded']).optional(),
+  status: z
+    .enum([
+      'pending',
+      'processing',
+      'delivered',
+      'failed',
+      'refunded',
+      'provider_uncertain',
+      'reconciliation_required',
+    ])
+    .optional(),
   cursor: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });

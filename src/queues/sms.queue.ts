@@ -54,5 +54,3 @@ export async function queueGenericSms(
     handleQueueError(err, { dedup_key: safeKey });
   }
 }
-
-

@@ -1,19 +1,3 @@
-/**
- * FlowKey — Idempotency Middleware
- *
- * Enforces idempotency on all state-mutating endpoints.
- *
- * Flow:
- *   1. Validate Idempotency-Key header is a UUID v4
- *   2. Check if key already exists in DB for this user
- *   3a. Key exists + payload hash matches → return original response (no re-execution)
- *   3b. Key exists + payload hash differs  → reject 422 + fraud log
- *   3c. Key absent → attach key info to req for service layer to store on completion
- *
- * The service layer is responsible for writing the idempotency key record
- * after a successful operation. The middleware only reads.
- */
-
 import type { Request, Response, NextFunction } from 'express';
 import { createHash } from 'crypto';
 import { AppError, ErrorCode } from '../errors/AppError';

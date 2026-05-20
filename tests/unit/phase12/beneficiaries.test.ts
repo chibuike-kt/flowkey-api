@@ -253,4 +253,3 @@ describe('Soft delete', () => {
     expect(visible.map((r) => r.id)).toEqual(['1', '3']);
   });
 });
-

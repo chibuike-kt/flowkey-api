@@ -3,9 +3,9 @@ import { AppError, ErrorCode } from '../../common/errors/AppError';
 
 export type LockoutFactor = 'passcode' | 'pin';
 
-
+// ---------------------------------------------------------------------------
 // Lockout thresholds
-
+// ---------------------------------------------------------------------------
 
 const PASSCODE_LOCKOUT_SCHEDULE = [
   { failureThreshold: 5, durationMs: 15 * 60 * 1000 }, // 15 min
@@ -18,9 +18,9 @@ const PIN_HARD_LOCK_FAILURES = 3;
 const PIN_HARD_LOCK_AFTER_LOCKOUTS = 2;
 const PIN_LOCK_DURATION_MS = 30 * 60 * 1000; // 30 min
 
-
+// ---------------------------------------------------------------------------
 // Key helpers
-
+// ---------------------------------------------------------------------------
 
 function failKey(userId: string, factor: LockoutFactor): string {
   return `lockout:${userId}:${factor}:fails`;
@@ -30,9 +30,9 @@ function untilKey(userId: string, factor: LockoutFactor): string {
   return `lockout:${userId}:${factor}:until`;
 }
 
-
+// ---------------------------------------------------------------------------
 // Public API
-
+// ---------------------------------------------------------------------------
 
 /**
  * Assert the factor is not currently locked.
@@ -131,9 +131,9 @@ export async function clearLockout(
   return { newFailCount: 0, lockedUntil: null, hardLocked: false };
 }
 
-
+// ---------------------------------------------------------------------------
 // Internal helpers
-
+// ---------------------------------------------------------------------------
 
 async function applyPasscodeLockout(
   userId: string,

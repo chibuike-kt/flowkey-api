@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// Internal error code registry
+// ---------------------------------------------------------------------------
+
 export enum ErrorCode {
   // --- Generic ---
   INTERNAL_SERVER_ERROR = 'INTERNAL_SERVER_ERROR',
@@ -155,6 +159,3 @@ export class AppError extends Error {
     return error instanceof AppError;
   }
 }
-
-
-

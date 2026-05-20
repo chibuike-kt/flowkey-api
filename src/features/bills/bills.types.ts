@@ -4,8 +4,10 @@ export type BillStatus =
   | 'pending' // queued, VTPass call not yet made
   | 'processing' // VTPass call in progress
   | 'delivered' // VTPass code 000 — fully successful
-  | 'failed' // VTPass rejected — wallet refunded
-  | 'refunded'; // failed + refund credited back
+  | 'failed' // VTPass rejected — refund not yet issued
+  | 'refunded' // failed + wallet refund completed
+  | 'provider_uncertain' // malformed/timeout response — do NOT refund, requery instead
+  | 'reconciliation_required'; // max retries exhausted — needs manual review
 
 // ---------------------------------------------------------------------------
 // Network / Provider identifiers

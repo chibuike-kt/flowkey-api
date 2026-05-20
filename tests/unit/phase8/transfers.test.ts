@@ -1,11 +1,3 @@
-/**
- * Phase 8/9 — Transfers unit tests
- *
- * Pure logic: schemas, reference format, KYC limits,
- * double-entry invariants, UID auth model, bank lifecycle,
- * result shapes (updated for rich sender/recipient objects).
- */
-
 import {
   ResolveRecipientSchema,
   InternalTransferSchema,

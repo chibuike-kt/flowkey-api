@@ -1,8 +1,3 @@
-/**
- * Scaffolding tests — Phase 1/2
- * Covers: ApiResponse helpers, AppError, config module
- */
-
 import { successResponse, errorResponse } from '../../src/common/types/api';
 import { AppError, ErrorCode } from '../../src/common/errors/AppError';
 
