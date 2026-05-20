@@ -280,6 +280,8 @@ model Wallet {
   user              User              @relation(fields: [user_id], references: [id])
   ledger_entries    LedgerEntry[]
   bill_transactions BillTransaction[]
+  sent_transactions     Transaction[] @relation("SenderWallet")
+  received_transactions Transaction[] @relation("ReceiverWallet")
 
   @@index([user_id])
   @@map("wallets")
@@ -334,6 +336,8 @@ model Transaction {
   reversal_record  Reversal?        @relation("ReversalTransaction")
   idempotency      IdempotencyKey?
   initiator        User?            @relation("TransactionInitiator", fields: [initiator_id], references: [id], map: "transactions_initiator_user_fk")
+  sender_wallet    Wallet?          @relation("SenderWallet",   fields: [sender_wallet_id],   references: [id])
+  receiver_wallet  Wallet?          @relation("ReceiverWallet", fields: [receiver_wallet_id], references: [id])
 
   @@index([reference])
   @@index([idempotency_key])
