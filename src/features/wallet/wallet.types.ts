@@ -22,7 +22,12 @@ export type TransactionLabel =
   | 'Deposit — Bank Transfer'
   | 'Deposit — Card'
   | 'Reversal'
-  | 'Transfer';
+  | 'Transfer'
+  | 'Airtime Purchase'
+  | 'Data Purchase'
+  | 'TV Subscription'
+  | 'Electricity Payment'
+  | 'Education Payment';
 
 export interface TransactionListItem {
   id: string;
@@ -71,7 +76,7 @@ export interface TransactionDetail {
 export interface CounterpartyDetail {
   display_name: string;
   username: string | null;
-  wallet_id: string;
+  wallet_id: string | null;
 }
 
 export interface BankCounterparty {
