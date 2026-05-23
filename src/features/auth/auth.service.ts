@@ -1,3 +1,15 @@
+/**
+ * FlowKey — Auth Service (v2)
+ *
+ * Registration flow:
+ *   1. initiate()     — phone or email → send OTP
+ *   2. verifyOtp()    — verify OTP → mark verified in Redis
+ *   3. checkUsername()— real-time availability check
+ *   4. complete()     — username + passcode → activate account, issue tokens
+ *
+ * Login: phone or email + passcode → tokens
+ */
+
 import * as argon2 from 'argon2';
 import { config } from '../../config';
 import { prisma } from '../../common/utils/prisma';
@@ -163,6 +175,7 @@ export async function verifyRegistrationOtp(
   userId: string,
   otp: string,
   contactType: 'phone' | 'email',
+  simforgeBypass = false,
 ): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const user = await db.user.findUnique({
@@ -180,7 +193,7 @@ export async function verifyRegistrationOtp(
     throw new AppError(ErrorCode.VALIDATION_ERROR, 'OTP type does not match registration channel.');
   }
 
-  await verifyOtp(userId, contactType, otp);
+  await verifyOtp(userId, contactType, otp, simforgeBypass);
 
   // Mark OTP as verified
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
@@ -812,6 +825,7 @@ export async function resetPasscode(payload: {
   fcm_token: string;
   ip_address: string;
   user_agent: string;
+  simforgeBypass?: boolean;
 }): Promise<AuthTokens> {
   const userId = await validateResetToken(payload.reset_token);
   // Get the registration channel to know which OTP type to verify
@@ -825,7 +839,12 @@ export async function resetPasscode(payload: {
     kyc_tier: number;
   };
 
-  await verifyOtp(userId, registration_channel as 'phone' | 'email', payload.otp);
+  await verifyOtp(
+    userId,
+    registration_channel as 'phone' | 'email',
+    payload.otp,
+    payload.simforgeBypass ?? false,
+  );
 
   const newHash = await hashValue(payload.new_passcode);
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
@@ -923,6 +942,7 @@ export async function initiatePinReset(
 export async function confirmPinResetOtp(params: {
   reset_token: string;
   otp: string;
+  simforgeBypass?: boolean;
 }): Promise<{ confirm_token: string; expires_at: Date }> {
   const userId = await redis.get(`pin_reset_token:${params.reset_token}`);
   if (!userId) {
@@ -942,7 +962,7 @@ export async function confirmPinResetOtp(params: {
 
   const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
 
-  await verifyOtp(userId, contactType, params.otp);
+  await verifyOtp(userId, contactType, params.otp, params.simforgeBypass ?? false);
 
   await redis.del(`pin_reset_token:${params.reset_token}`);
 
@@ -1112,6 +1132,7 @@ export async function initiateUppReset(
 export async function confirmUppResetOtp(params: {
   reset_token: string;
   otp: string;
+  simforgeBypass?: boolean;
 }): Promise<{ confirm_token: string; expires_at: Date }> {
   const userId = await redis.get(`upp_reset_token:${params.reset_token}`);
   if (!userId) {
@@ -1131,7 +1152,7 @@ export async function confirmUppResetOtp(params: {
 
   const contactType = (user.registration_channel ?? 'phone') as 'phone' | 'email';
 
-  await verifyOtp(userId, contactType, params.otp);
+  await verifyOtp(userId, contactType, params.otp, params.simforgeBypass ?? false);
 
   await redis.del(`upp_reset_token:${params.reset_token}`);
 

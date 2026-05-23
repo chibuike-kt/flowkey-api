@@ -1,3 +1,8 @@
+/**
+ * FlowKey — Auth Controller
+ * HTTP layer only. No business logic here.
+ */
+
 import type { Request, Response, NextFunction } from 'express';
 import {
   InitiateRegistrationSchema,
@@ -26,6 +31,13 @@ import { resendOtp } from './otp.service';
 import { successResponse } from '../../common/types/api';
 import { AppError, ErrorCode } from '../../common/errors/AppError';
 import { config } from '../../config';
+
+// ---------------------------------------------------------------------------
+// SimForge bypass helper — extracts x-simforge header
+// ---------------------------------------------------------------------------
+function isSimforge(req: Request): boolean {
+  return req.headers['x-simforge'] !== undefined;
+}
 
 function ip(req: Request): string {
   return req.ip ?? '0.0.0.0';
@@ -80,7 +92,12 @@ export async function verifyRegistrationOtp(
     if (!contactType || !['phone', 'email'].includes(contactType)) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'contact_type must be "phone" or "email".');
     }
-    await AuthService.verifyRegistrationOtp(body.registration_id, body.otp, contactType);
+    await AuthService.verifyRegistrationOtp(
+      body.registration_id,
+      body.otp,
+      contactType,
+      isSimforge(req),
+    );
     res.status(200).json(
       successResponse({
         verified: true,
@@ -338,6 +355,7 @@ export async function resetPasscode(
   try {
     const body = ResetPasscodeSchema.parse(req.body);
     const tokens = await AuthService.resetPasscode({
+      simforgeBypass: isSimforge(req),
       reset_token: body.reset_token,
       otp: body.otp,
       new_passcode: body.new_passcode,
@@ -407,7 +425,10 @@ export async function confirmPinResetOtp(
         ErrorCode.VALIDATION_ERROR,
         parsed.error.issues.map((e) => e.message).join('; '),
       );
-    const result = await AuthService.confirmPinResetOtp(parsed.data);
+    const result = await AuthService.confirmPinResetOtp({
+      ...parsed.data,
+      simforgeBypass: isSimforge(req),
+    });
     res.json(successResponse(result));
   } catch (err) {
     next(err);
@@ -483,7 +504,10 @@ export async function confirmUppResetOtp(
         ErrorCode.VALIDATION_ERROR,
         parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
       );
-    const result = await AuthService.confirmUppResetOtp(parsed.data);
+    const result = await AuthService.confirmUppResetOtp({
+      ...parsed.data,
+      simforgeBypass: isSimforge(req),
+    });
     res.json(successResponse(result));
   } catch (err) {
     next(err);

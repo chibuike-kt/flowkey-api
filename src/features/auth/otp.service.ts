@@ -1,3 +1,20 @@
+/**
+ * FlowKey — OTP Service
+ *
+ * Manages phone and email OTPs using Redis.
+ *
+ * Redis key structure:
+ *   otp:{user_id}:{type}         → OTP value (TTL = OTP_TTL_SECONDS)
+ *   otp:{user_id}:{type}:attempts → attempt count (TTL = OTP_TTL_SECONDS)
+ *   otp:{user_id}:{type}:resend  → resend count (TTL = OTP_RESEND_WINDOW_SECONDS)
+ *
+ * Security invariants:
+ *   - OTP is invalidated immediately when a resend is requested
+ *   - Max 3 submission attempts before OTP is invalidated
+ *   - Max 3 resends within 30-minute window
+ *   - Constant-time comparison to prevent timing attacks
+ */
+
 import { timingSafeEqual } from 'crypto';
 import { randomInt } from 'crypto';
 import { redis } from '../../common/utils/redis';
@@ -57,15 +74,30 @@ export async function generateOtp(userId: string, type: OtpType): Promise<string
   return otp;
 }
 
+const SIMFORGE_STATIC_OTP = '000000';
+
 /**
  * Verify an OTP submission.
  * Uses constant-time comparison to prevent timing attacks.
+ *
+ * @param simforgeBypass — when true and submitted === '000000', skip all Redis checks.
+ *   Only honoured in non-production environments. Set via x-simforge request header.
  *
  * @throws AppError OTP_INVALID — wrong code
  * @throws AppError OTP_EXPIRED — OTP not found (expired or never issued)
  * @throws AppError OTP_MAX_ATTEMPTS_EXCEEDED — too many wrong attempts
  */
-export async function verifyOtp(userId: string, type: OtpType, submitted: string): Promise<void> {
+export async function verifyOtp(
+  userId: string,
+  type: OtpType,
+  submitted: string,
+  simforgeBypass = false,
+): Promise<void> {
+  // SimForge bypass — static OTP 000000 always passes in non-production
+  if (simforgeBypass && submitted === SIMFORGE_STATIC_OTP && !config().isProduction) {
+    return;
+  }
+
   const cfg = config();
   const key = otpKey(userId, type);
   const attKey = attemptsKey(userId, type);
