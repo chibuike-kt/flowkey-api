@@ -140,7 +140,7 @@ export async function initiateRegistration(
     data: {
       phone: contactType === 'phone' ? contact : null,
       email: contactType === 'email' ? contact : null,
-      universal_id: `PENDING-${Date.now()}`, // placeholder
+      universal_id: `PENDING-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`, // placeholder — replaced at completeRegistration
       registration_channel: contactType,
       registration_step: 'otp_pending',
       account_status: 'pending_verification',
