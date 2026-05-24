@@ -5,6 +5,7 @@ import {
   authRateLimit,
   otpRateLimit,
   otpResendRateLimit,
+  loginRateLimit,
   userRateLimit,
 } from '../../common/middleware/rateLimiter';
 import { idempotencyCheck } from '../../common/middleware/idempotency';
@@ -19,7 +20,7 @@ router.get('/check-username', userRateLimit, C.checkUsername);
 router.post('/complete', authRateLimit, idempotencyCheck, C.completeRegistration);
 
 // Session
-router.post('/login', authRateLimit, idempotencyCheck, C.login);
+router.post('/login', loginRateLimit, idempotencyCheck, C.login);
 router.post('/refresh', authRateLimit, C.refreshToken);
 router.post('/unlock', authRateLimit, idempotencyCheck, C.unlockWithPasscode);
 router.post('/logout', requireAuth, idempotencyCheck, C.logout);
